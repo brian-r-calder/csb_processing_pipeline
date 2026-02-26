@@ -3,7 +3,6 @@
 Created on Tue Feb 11 14:09:05 2025
 
 @author: Anthony.R.Klemm
-"""
 
 This script:
   1. Gets a bounding box from a BlueTopo tile,

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools >= 61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version"]
+name = "ocs-csb"
+authors = [
+    { name="Anthony Klemm", email="anthony.r.klemm@noaa.gov" },
+    { name="Brian Calder", email="brc@ccom.unh.edu" },
+    { name="Brian Miles", email="bmiles@ccom.unh.edu" },
+]
+description = "NOAA Office of Coast Survey Crowdsource Bathymetry Processing Code"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.14"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "requests~=2.32.5",
+    "pandas~=3.0.0",
+    "geopandas~=0.14.0",
+    "numpy~=2.4.2",
+    "scipy~=1.17.1",
+    "rasterio~=1.5.0",
+    "gdal~=3.12.2",
+    "shapely~=2.1.2",
+    "matplotlib~=3.10.8",
+    "scikit-image~=0.26.0",
+    "duckdb~=1.4.4",
+    "seaborn~=0.13.2",
+    "scikit-learn~=1.8.0",
+    "click~=8.3.1",
+    "rich~=14.3.2",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/anthonyklemm/csb_processing_pipeline"
+"Bug Tracker" = "https://github.com/anthonyklemm/csb_processing_pipeline/issues"
+
+[project.scripts]
+processing = "ocscsb.gui:cli"
+ocscsb = "ocscsb.command:cli"
+
+[tool.setuptools.dynamic]
+version = {attr = "ocscsb.__version__"}
+
+[tool.setuptools]
+include-package-data = true
