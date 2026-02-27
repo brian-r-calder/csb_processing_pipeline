@@ -48,12 +48,25 @@ The individual Python scripts for manipulations are translated primarily into fu
         _make_keys()
         gpkg_outliers_to_db()
 
+* 7-Outlier_model_PMM_Imputation.py -> outlier-detect
+
+    library/analysis
+
+        _detect_outliers()
+        plot_outlier_analysis()
+        outlier_detect_gpkg()
+
+    library/geotiff
+
+        create_geotiff()
+        gpkgs_to_geotiffs()
+
+
 ## Functions To Go
 
 * 2-csb_processing.py
 * 6-export_transits_to_gpkg_and_tiff_2.py
 * 6-export_transits_to_gpkg_and_tiff_speed.py
-* 7-Outlier_model_PMM_Imputation.py
 * 9-csb_export_all_points_create_geotiff.py
 * 10-csb_differencing_visualizations.py
 
@@ -68,3 +81,5 @@ The individual Python scripts for manipulations are translated primarily into fu
 4. In a number of the scripts, columns in the DuckDB database are removed and replaced, and the comments note that the columns are "incorrect" and are being replaced.  It's unclear, however, why the columns didn't use the correct calculations in the first instance!  What's the reasoning here.
 
 5. Validate whether the extensive output (e.g., printing the whole DataFrame for outliers) in gpkg_outliers_to_db() is required in any known use-case.
+
+6. There are multiple versions of the detect_outliers() code in the various numbered scripts, which appear to be the same thing; but are they?

@@ -13,7 +13,11 @@ from ocscsb.library.database import (
     apply_depth_offsets,
     gpkg_outliers_to_db
 )
-from ocscsb.library.analysis import generate_offset_histograms
+from ocscsb.library.analysis import (
+    generate_offset_histograms,
+    outlier_detect_gpkg,
+)
+from ocscsb.library.geotiff import gpkgs_to_geotiffs
 
 @click.version_option(version=version)
 @click.group()
@@ -117,8 +121,42 @@ def outlier_ingest(input_dir: Path, db_file: Path, verbose: bool) -> None:
     '''
     gpkg_outliers_to_db(input_dir, db_file, verbose=verbose)
 
+
+@click.command()
+@click.argument('source_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('cleaned_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option('--geotiffs', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              help='Directory for GeoTIFF output per GeoPackage')
+@click.option('--plots', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              help='Directory for plots of outliers')
+@click.option('-v', '--verbose', type=bool, is_flag=True, default=False, help='Display verbose messages on execution status')
+def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: Path, verbose: bool) -> None:
+    '''Run outlier detection on a directory of GeoPackages.
+
+    This command runs an iterative outlier detection algorithm over each GeoPackage file (.gpkg) in the
+    SOURCE_DIR directory, writing the processed output to CLEANED_DIR with a prefix of "Processed_".
+    '''
+    options: dict = {
+        'verbose': verbose,
+    }
+    if plots.exists():
+        options['plot_dir'] = str(plots)
+
+    n_processed: int = 0
+    n_total: int = 0
+    for filename in source_dir.glob('*.gpkg'):
+        n_total += 1
+        if outlier_detect_gpkg(filename, cleaned_dir / 'Processed_' / filename.name, **options):
+            n_processed += 1
+    if geotiffs.exists():
+        gpkgs_to_geotiffs(cleaned_dir, geotiffs, **options)
+
+    if verbose:
+        print(f'[blue]Debug:[/] Processing {n_processed} GeoPackage files from {n_total}.')
+
 cli.add_command(scrape)
 cli.add_command(ingest)
 cli.add_command(offset_pmfs)
 cli.add_command(apply_offsets)
 cli.add_command(outlier_ingest)
+cli.add_command(outlier_detect)
