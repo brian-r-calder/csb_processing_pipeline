@@ -1,0 +1,15 @@
+requests~=2.32.5
+pandas~=3.0.0
+geopandas~=1.1.2
+numpy~=2.4.2
+scipy~=1.17.1
+rasterio~=1.5.0
+GDAL
+shapely~=2.1.2
+matplotlib~=3.10.8
+scikit-image~=0.26.0
+duckdb~=1.4.4
+seaborn~=0.13.2
+scikit-learn~=1.8.0
+click~=8.3.1
+rich~=14.3.2
