@@ -59,7 +59,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str):
 @click.argument('input_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('output_db', type=click.Path(file_okay=True, dir_okay=False, path_type=Path))
 def ingest(input_dir: Path, output_db: Path) -> None:
-    '''Read GeoPackage files of CSB data into a single DuckDB file
+    '''Read GeoPackage files of CSB data into a DuckDB file.
 
     This command reads all GeoPackage files in INPUT_DIR (files ending with .gpkg), and writes them into
     the 'csb' table in OUTPUT_DB, using DuckDB.  The INPUT_DIR must exist, although it can be empty; the
@@ -121,3 +121,4 @@ cli.add_command(scrape)
 cli.add_command(ingest)
 cli.add_command(offset_pmfs)
 cli.add_command(apply_offsets)
+cli.add_command(outlier_ingest)
