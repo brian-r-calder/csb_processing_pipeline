@@ -52,7 +52,7 @@ def replace_depth_diff(db_file: Path, **kwargs) -> None:
             con.execute("ALTER TABLE csb ADD COLUMN diff DOUBLE DEFAULT NULL")
             con.execute("UPDATE csb SET diff = (depth_new *-1 - Raster_Value)*-1 WHERE diff IS NULL")
 
-def apply_offsets(db_file: Path, **kwargs) -> None:
+def apply_depth_offsets(db_file: Path, **kwargs) -> None:
     verbose: bool = False
     if 'verbose' in kwargs:
         verbose = kwargs['verbose']
@@ -189,7 +189,7 @@ def gpkg_outliers_to_db(gpkg_dir: Path, db_file: Path, **kwargs) -> None:
             file_keys = _make_keys(geopackage, verbose=verbose)
             outlier_keys.update(file_keys)
         if verbose:
-            print(f'[blue]Debug:[/] Sample synthetic keys from GeoPackages: {outlier_keys[:5]}')
+            print(f'[blue]Debug:[/] Sample synthetic keys from GeoPackages: {list(outlier_keys)[:5]}')
             key_count = duckdb_df['synthetic_key'].isin(outlier_keys).sum()
             print(f'[blue]Info:[/] Total {key_count} matching keys in csb table')
         

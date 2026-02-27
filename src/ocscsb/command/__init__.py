@@ -10,7 +10,7 @@ from ocscsb.library.dcdb import ensure_grid_id_exists, csv_file_exists, process_
 from ocscsb.library.database import (
     ingest_geopackages,
     replace_depth_diff,
-    apply_offsets,
+    apply_depth_offsets,
     gpkg_outliers_to_db
 )
 from ocscsb.library.analysis import generate_offset_histograms
@@ -103,7 +103,7 @@ def apply_offsets(input_db: Path, verbose: bool) -> None:
     based on the average difference in the database for each unique ID.  The uncertainty is then recomputed
     based on the assumption of CATZOC C as a model for worst-case (but conservative) uncertainty.
     '''
-    apply_offsets(input_db, verbose=verbose)
+    apply_depth_offsets(input_db, verbose=verbose)
 
 @click.command()
 @click.argument('input_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
@@ -115,7 +115,7 @@ def outlier_ingest(input_dir: Path, db_file: Path, verbose: bool) -> None:
     This reads the outlier flags in all GeoPackage files (*.gpkg) in INPUT_DIR and transfers them to the
     corresponding entries in the DB_FILE (DuckDB database).
     '''
-    gpkg_outliers_to_db(input_dir, db_file, verbose)
+    gpkg_outliers_to_db(input_dir, db_file, verbose=verbose)
 
 cli.add_command(scrape)
 cli.add_command(ingest)

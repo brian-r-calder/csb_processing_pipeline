@@ -45,7 +45,7 @@ def generate_offset_histograms(db_file: Path, export_dir: Path, **kwargs) -> tup
 
             # Plotting the histogram and density plot for 'diff'
             plt.figure(figsize=(10, 6))
-            sns.histplot(data_df['diff'], bins=30, kde=True, color="skyblue", label='Histogram')
+            sns.histplot(data_df['diff'].tolist(), bins=30, kde=True, color="skyblue", label='Histogram')
             plt.axvline(data_df['diff'].mean(), color='green', linestyle='--',
                         label=f'Mean: {data_df["diff"].mean():.2f}')
             # Draw vertical lines for the standard deviation
