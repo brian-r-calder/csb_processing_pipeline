@@ -5,6 +5,14 @@ import pandas as pd
 import geopandas as gpd
 from rich import print
 
+def enable_spatial(con: duckdb.DuckDBPyConnection) -> None:
+    con.install_extension('spatial')
+    con.load_extension('spatial')
+
+def db_unique_ids(con: duckdb.DuckDBPyConnection) -> list[str]:
+    db_ids = con.execute('SELECT DISTINCT unique_id FROM csb;').fetchall()
+    return [str(x[0]) for x in db_ids]
+
 def ingest_geopackages(source_dir: Path, db_file: Path) -> None:
     if not source_dir.exists() or not source_dir.is_dir():
         raise ValueError(f'|{source_dir}| is not a directory')
@@ -12,8 +20,7 @@ def ingest_geopackages(source_dir: Path, db_file: Path) -> None:
     table_created: bool = False
 
     with duckdb.connect(database=db_file.as_posix()) as con:
-        con.install_extension('spatial')
-        con.load_extension('spatial')
+        enable_spatial(con)
         for filename in source_dir.glob('*.gpkg'):
             print(f'[blue]Info:[/] loading {filename} into DuckDB table')
             if not table_created:
@@ -215,3 +222,52 @@ def gpkg_outliers_to_db(gpkg_dir: Path, db_file: Path, **kwargs) -> None:
         """)
         if verbose:
             print("[blue]Info:[/] Updated Outlier column written back to DuckDB.")
+
+def _add_column(con: duckdb.DuckDBPyConnection, name: str, type: str, **kwargs) -> bool:
+    verbose: bool = kwargs.get('verbose', False)
+    try:
+        con.execute(f"ALTER TABLE csb ADD COLUMN {name} {type};")
+        if verbose:
+            print(f"[blue]Debug:[/] Added {name} column to csb.")
+    except Exception as e:
+        if verbose:
+            print("[orange]Warning:[/] {name}} column already exists or could not be added:", e)
+        return False
+    return True
+
+def augment_db_for_transits(con: duckdb.DuckDBPyConnection, **kwargs) -> bool:
+    verbose: bool = kwargs.get('verbose', False)
+    rc: bool = _add_column('synthetic_key', 'VARCHAR', **kwargs)
+    rc |= _add_column('Outlier', 'BOOLEAN DEFAULT FALSE')
+    
+    update_synthetic_key_query = """
+    UPDATE csb
+    SET synthetic_key = md5(
+        cast(EXTRACT(epoch FROM STRPTIME(time, '%Y%m%d %H:%M:%S')) as varchar)
+        || '_' || printf('%.6f', CAST(lat as DOUBLE))
+        || '_' || printf('%.6f', CAST(lon as DOUBLE))
+    )
+    """
+    con.execute(update_synthetic_key_query)
+    if verbose:
+        print("[blue]Debug:[/] Updated synthetic_key values in csb.")
+    
+    rc |= _add_column('transid_id', 'VARCHAR')
+    rc |= _add_column('vessel_speed_smoothed', 'DOUBLE')
+
+    return rc
+
+def transit_df(con: duckdb.DuckDBPyConnection, unique_id: str) -> pd.DataFrame:
+    query = f"""
+        SELECT unique_id, platform_name_x AS platform_name, time, depth_mod AS depth,
+               uncertainty_vert AS uncertainty, uncertainty_hori, lat, lon, synthetic_key
+        FROM csb
+        WHERE unique_id = '{unique_id}'
+        AND depth_mod IS NOT NULL
+        ORDER BY time;
+        """
+    df = con.execute(query).df()
+    # Convert time column to datetime
+    df['time'] = pd.to_datetime(df['time'], format='%Y%m%d %H:%M:%S')
+
+    return df

@@ -4,18 +4,23 @@ import traceback
 import click
 from rich import print
 import geopandas as gpd
+import duckdb
 
 from ocscsb import __version__ as version
 from ocscsb.library.dcdb import ensure_grid_id_exists, csv_file_exists, process_tile
 from ocscsb.library.database import (
+    enable_spatial,
+    db_unique_ids,
     ingest_geopackages,
     replace_depth_diff,
     apply_depth_offsets,
-    gpkg_outliers_to_db
+    gpkg_outliers_to_db,
+    augment_db_for_transits
 )
 from ocscsb.library.analysis import (
     generate_offset_histograms,
     outlier_detect_gpkg,
+    make_transits_by_id
 )
 from ocscsb.library.geotiff import gpkgs_to_geotiffs
 
@@ -154,9 +159,42 @@ def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: P
     if verbose:
         print(f'[blue]Debug:[/] Processing {n_processed} GeoPackage files from {n_total}.')
 
+@click.command()
+@click.argument('db_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
+@click.arguemnt('output_dir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path))
+@click.option('--geotiffs', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              help='Directory for GeoTIFF output per GeoPackage')
+@click.option('--plots', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              help='Directory for plots of outliers')
+@click.option('--maxgap', type=float, default=4.0, help='Maximum gap (hours) between points in a transit')
+@click.option('--maxduration', type=float, default=7.0, help='Maximum duration (days) in transits')
+@click.option('-v', '--verbose', type=bool, is_flag=True, default=False, help='Display verbose messages on execution status')
+def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path, maxgap: float, maxduration: float, verbose: bool) -> None:
+    '''Compute transits for unique ids, and output GeoPackages.
+
+    This command computes transits from the observations in DB_FILE, and exports the transit as a
+    separate GeoPackage in OUTPUT_DIR for further analysis, optionally generating plots and GeoTIFFs
+    from the transits for diagnostic purposes.
+    '''
+    options: dict = {
+        'verbose': verbose
+    }
+    if geotiffs.exists():
+        options['geotiff_dir'] = geotiffs
+    if plots.exists():
+        options['plots_dir'] = plots
+    
+    with duckdb.connect(database=db_file.as_posix()) as con:
+        enable_spatial(con)
+        augment_db_for_transits(con, **options)
+        unique_ids = db_unique_ids(con)
+        for unique_id in unique_ids:
+            make_transits_by_id(con, unique_id, output_dir, maxgap, maxduration, **options)
+
 cli.add_command(scrape)
 cli.add_command(ingest)
 cli.add_command(offset_pmfs)
 cli.add_command(apply_offsets)
 cli.add_command(outlier_ingest)
 cli.add_command(outlier_detect)
+cli.add_command(export_transits)

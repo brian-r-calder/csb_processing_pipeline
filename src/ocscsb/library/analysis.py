@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import timedelta
 import seaborn as sns
 import matplotlib.pyplot as plt
 import duckdb
@@ -11,6 +12,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from scipy.ndimage import uniform_filter1d
 from rich import print
+
+from ocscsb.library.database import transit_df
 
 def generate_offset_histograms(db_file: Path, export_dir: Path, **kwargs) -> tuple[int,int]:
     verbose: bool = kwargs.get('verbose', False)
@@ -222,3 +225,80 @@ def outlier_detect_gpkg(filename: Path, output: Path, **kwargs) -> bool:
         print(f"[red]Error:[/] Failed processing {filename}: {e}")
 
     return True
+
+def create_transit_ids(df: pd.DataFrame, max_hours_gap: float = 4.0, max_days_duration: float = 7.0) -> pd.DataFrame:
+    df = df.sort_values(by='time')
+    current_transit_id = None
+    last_time = None
+    current_start_time = None
+    transit_ids = []
+    for _, row in df.iterrows():
+        if last_time is None or (row['time'] - last_time > timedelta(hours=max_hours_gap)) \
+           or ((row['time'] - current_start_time) > timedelta(days=max_days_duration)):
+            current_transit_id = f"{row['unique_id']}_{row['time'].strftime('%Y-%m-%d_%H-%M-%S')}"
+            current_start_time = row['time']
+        transit_ids.append(current_transit_id)
+        last_time = row['time']
+    df['transit_id'] = transit_ids
+    return df
+
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great-circle distance between two points on the Earth.
+    Parameters (lat1, lon1, lat2, lon2) are in decimal degrees.
+    Returns the distance in meters.
+    """
+    R = 6371000.0  # Earth's radius in meters
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    return R * c
+
+def calculate_vessel_speed(group: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given a DataFrame group (with at least 'time', 'lat', and 'lon' columns),
+    calculates the raw vessel speed (m/s) between consecutive points and
+    applies a uniform smoothing filter. Returns the modified group with two
+    new columns: 'vessel_speed' and 'vessel_speed_smoothed'.
+    """
+    # Ensure the DataFrame is sorted by time and work on a copy
+    group = group.sort_values('time').copy()
+    
+    # Ensure latitude and longitude are numeric to avoid NoneType issues.
+    group['lat'] = pd.to_numeric(group['lat'], errors='coerce')
+    group['lon'] = pd.to_numeric(group['lon'], errors='coerce')
+    
+    # Calculate time differences (in seconds)
+    group['time_diff'] = group['time'].diff().dt.total_seconds()
+    
+    # Calculate distances (in meters) between consecutive points using haversine
+    group['distance'] = _haversine(
+        group['lat'].shift(), group['lon'].shift(),
+        group['lat'], group['lon']
+    )
+    
+    # Compute raw vessel speed in m/s; first record will have NaN, so fill with 0
+    group['vessel_speed'] = group['distance'] / group['time_diff']
+    group['vessel_speed'] = group['vessel_speed'].fillna(0)
+    
+    # Apply a uniform smoothing filter to the vessel speed; adjust window size as needed
+    group['vessel_speed_smoothed'] = uniform_filter1d(group['vessel_speed'], size=5)
+    
+    return group
+
+def make_transits_by_id(con: duckdb.DuckDBPyConnection, unique_id: str, output_dir: Path,
+                        maxgap: float, maxduration: float, **kwargs) -> None:
+    verbose: bool = kwargs.get('verbose', False)
+    df = transit_df(con, unique_id)
+    df = create_transit_ids(df, maxgap, maxduration)
+    for transit_id, group in df.groupby('transit_id'):
+        if verbose:
+            print(f"\n[blue]Debug:[/] Processing unique_id {unique_id}, transit {transit_id}")
+        group['Outlier'] = False
+        # TODO: Convert remainder of 6-export_transits_to_gpkg_and_tiff_speed.py
+        # This includes refactoring the outlier detection from outlier_detect_gpkg so that we can
+        # use that independently of the surrounding loading of files, etc. (since this code needs
+        # to apply by transit_id group, rather than a whole GeoPackage, and we don't want to have
+        # to write a file then read it again)

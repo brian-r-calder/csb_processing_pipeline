@@ -47,7 +47,7 @@ def create_geotiff(gdf: gpd.GeoDataFrame, filename: Path, resolution: float = 8.
                 dest.write(array, idx)
 
     except Exception as e:
-        raise RuntimeError(f'Failed to create GeoTIFF for {filename.as_posix()}; Error: {format_exc()}')
+        raise RuntimeError(f'Failed to create GeoTIFF for {filename}; Error: {format_exc()}')
 
 def gpkgs_to_geotiffs(source_dir: Path, dest_dir: Path, resolution: float = 8.0, **kwargs) -> None:
     '''Transform a directory of GeoPackage files into a corresponding set of GeoTIFFs
