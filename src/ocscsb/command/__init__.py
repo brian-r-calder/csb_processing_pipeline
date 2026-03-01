@@ -45,7 +45,7 @@ def cli():
 @click.argument('output_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('email', type=str)
 def scrape(input_shp: Path, output_dir: Path, email: str):
-    '''Search the DCDB archive API for CSB files from AWS
+    '''Search the DCDB archive API for CSB files from AWS.
 
     This command queries the DCDB point-store API on AWS to find the CSV versions of the contributed CSB
     files for a given tile of data, as specified in the input Shapefile INPUT_SHP.  The CSVs retrieved
@@ -232,6 +232,12 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
               type=bool, is_flag=True, default=False,
               help='Display verbose messages on execution status')
 def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg: int, verbose: bool) -> None:
+    '''Export DuckDB to GeoPackage, and optionally GeoTIFF.
+
+    This command writes the points in the DuckDB DB_FILE as a GeoPackage in GPKG, projecting
+    into a new EPSG zone if specified, and optionally writing a rasterized version of the
+    depth observations as a GeoTIFF (with specified resolution) if required.
+    '''
     options: dict = {
         'verbose': verbose,
         'epsg': epsg
@@ -254,6 +260,14 @@ def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg:
               type=bool, is_flag=True, default=False,
               help='Display verbose messages on execution status')
 def diff_viz(db_file: Path, ref_file: Path, plot_dir: Path, geotiff: Path, resolution: float, verbose: bool) -> None:
+    '''Compute difference against reference, making plots.
+
+    This command reads the corrected depths from the DuckDB DB_FILE and computes the difference
+    in depth against the GeoTIFF REF_FILE (typically a BlueTopo tile), and generate a plot of the
+    histogram of differences and color-coded plot of mean difference in PLOT_DIR (with well-known
+    names for the files reflecting the inputs), and then saving the aggregated mean difference in
+    a grid of given resolution as GEOTIFF.
+    '''
     bbox = get_bbox_wgs84(ref_file)
     with duckdb.connect(database=db_file) as con:
         gdf: gpd.GeoDataFrame = query_by_bbox(con, bbox)
