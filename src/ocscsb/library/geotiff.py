@@ -3,7 +3,8 @@ import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
 import rasterio
-from rasterio.transform import from_origin
+from rasterio.transform import from_origin, from_bounds
+from rasterio.features import rasterize
 from traceback import format_exc
 from rich import print
 
@@ -48,6 +49,44 @@ def create_geotiff(gdf: gpd.GeoDataFrame, filename: Path, resolution: float = 8.
 
     except Exception as e:
         raise RuntimeError(f'Failed to create GeoTIFF for {filename}; Error: {format_exc()}')
+
+def rasterize_geotiff(gdf: gpd.GeoDataFrame, filename: Path, resolution: float = 8.0) -> None:
+    output_bounds = gdf.total_bounds
+    ncols = int((output_bounds[2] - output_bounds[0]) / resolution)
+    nrows = int((output_bounds[3] - output_bounds[1]) / resolution)
+
+    # Create the affine transform from bounds
+    transform = from_bounds(
+        output_bounds[0], output_bounds[1], output_bounds[2], output_bounds[3],
+        ncols,
+        nrows
+    )
+    filename.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create an empty raster with the desired nodata value and burn the depth_mod values.
+    with rasterio.open(
+        filename,
+        "w",
+        driver="GTiff",
+        height=nrows,
+        width=ncols,
+        compress='lzw',
+        count=1,  # Single band output
+        dtype="float32",
+        crs=gdf.crs,
+        transform=transform,
+        nodata=1000000,  # Set the nodata value here
+    ) as dst:
+        # Burn the vector data into the raster.
+        # For each geometry, use its corresponding depth_mod value.
+        burned = rasterize(
+            ((geom, value) for geom, value in zip(gdf.geometry, gdf['depth_mod'])),
+            out_shape=dst.shape,
+            fill=1000000,  # Background value (nodata)
+            transform=dst.transform,
+            dtype="float32"
+        )
+        dst.write(burned, 1)
 
 def gpkgs_to_geotiffs(source_dir: Path, dest_dir: Path, resolution: float = 8.0, **kwargs) -> None:
     '''Transform a directory of GeoPackage files into a corresponding set of GeoTIFFs

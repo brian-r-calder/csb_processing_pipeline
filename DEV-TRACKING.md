@@ -61,14 +61,6 @@ The individual Python scripts for manipulations are translated primarily into fu
         caculate_vessel_speed()
         make_transits_by_id()
 
-* 8-insert_outlier_flags_in_duckdb.py -> outlier-ingest
-
-    library/database
-
-        _key()
-        _make_keys()
-        gpkg_outliers_to_db()
-
 * 7-Outlier_model_PMM_Imputation.py -> outlier-detect
 
     library/analysis
@@ -82,11 +74,27 @@ The individual Python scripts for manipulations are translated primarily into fu
         create_geotiff()
         gpkgs_to_geotiffs()
 
+* 8-insert_outlier_flags_in_duckdb.py -> outlier-ingest
 
+    library/database
+
+        _key()
+        _make_keys()
+        gpkg_outliers_to_db()
+
+* 9-csb_export_all_points_create_geotiff.py -> export-db
+
+    library/database
+
+        export_db_to_gpkg()
+    
+    library/geotiff
+
+        rasterize_geotiff() [Note not create_geotiff() due to different rasterio usage]
+        
 ## Functions To Go
 
 * 2-csb_processing.py
-* 9-csb_export_all_points_create_geotiff.py
 * 10-csb_differencing_visualizations.py
 
 # Outstanding Questions
@@ -102,3 +110,5 @@ The individual Python scripts for manipulations are translated primarily into fu
 5. Validate whether the extensive output (e.g., printing the whole DataFrame for outliers) in gpkg_outliers_to_db() is required in any known use-case.
 
 6. There are multiple versions of the detect_outliers() code in the various numbered scripts, which appear to be the same thing; but are they?
+
+7. Is there a significant difference between create_geotiff() and rasterize_geotiff() that means that we need to keep both, or could be merge?

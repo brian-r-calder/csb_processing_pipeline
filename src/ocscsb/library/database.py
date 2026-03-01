@@ -237,8 +237,8 @@ def _add_column(con: duckdb.DuckDBPyConnection, name: str, type: str, **kwargs) 
 
 def augment_db_for_transits(con: duckdb.DuckDBPyConnection, **kwargs) -> bool:
     verbose: bool = kwargs.get('verbose', False)
-    rc: bool = _add_column('synthetic_key', 'VARCHAR', **kwargs)
-    rc |= _add_column('Outlier', 'BOOLEAN DEFAULT FALSE')
+    rc: bool = _add_column(con, 'synthetic_key', 'VARCHAR', **kwargs)
+    rc |= _add_column(con, 'Outlier', 'BOOLEAN DEFAULT FALSE')
     
     update_synthetic_key_query = """
     UPDATE csb
@@ -252,8 +252,8 @@ def augment_db_for_transits(con: duckdb.DuckDBPyConnection, **kwargs) -> bool:
     if verbose:
         print("[blue]Debug:[/] Updated synthetic_key values in csb.")
     
-    rc |= _add_column('transid_id', 'VARCHAR')
-    rc |= _add_column('vessel_speed_smoothed', 'DOUBLE')
+    rc |= _add_column(con, 'transid_id', 'VARCHAR')
+    rc |= _add_column(con, 'vessel_speed_smoothed', 'DOUBLE')
 
     return rc
 
@@ -304,3 +304,24 @@ def update_db_for_transits(con: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> 
         """
         con.execute(update_speed_query)
         print("Batch updated vessel speed values in csb table for this transit group.")
+
+def export_db_to_gpkg(db_file: Path, gpkg_file: Path, **kwargs) -> gpd.GeoDataFrame:
+    verbose = kwargs.get('verbose', False)
+    epsg = kwargs.get('epsg', 4326)
+    with duckdb.connect(database=db_file) as con:
+        enable_spatial(con)
+        df = con.execute("""SELECT * FROM csb WHERE Outlier = 0 AND depth_mod IS NOT NULL""").df()
+
+        # If there is a 'geom' column (with WKB data), drop it so we can build our geometry from lat and lon.
+        if 'geom' in df.columns:
+            df = df.drop(columns=['geom'])
+
+        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat))
+        gdf.set_crs(epsg=4326, inplace=True)
+        gdf.to_crs(epsg=epsg, inplace=True)
+
+        gpkg_file.parent.mkdir(parents=True, exist_ok=True)
+        gdf.to_file(gpkg_file, driver='GPKG')
+        if verbose:
+            print(f'[blue]Debug:[/] GeoPackage successfully written to {gpkg_file}.')
+    return gdf

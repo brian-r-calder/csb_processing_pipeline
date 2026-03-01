@@ -80,8 +80,8 @@ def generate_offset_histograms(db_file: Path, export_dir: Path, **kwargs) -> tup
     
     return files_extracted, plots_made
 
-def _detect_outliers(data: gpd.GeoDataFrame, scaler: StandardScaler, threshold_percentile:
-                     float, original_gdf: gpd.GeoDataFrame, return_smoothed: bool = False) -> tuple[pd.Series | gpd.GeoDataFrame, int]:
+def _detect_outliers(data: gpd.GeoDataFrame | pd.DataFrame, scaler: StandardScaler, threshold_percentile:
+                     float, original_gdf: gpd.GeoDataFrame | pd.DataFrame, return_smoothed: bool = False) -> tuple[pd.Series | gpd.GeoDataFrame | pd.DataFrame, int]:
     # Normalize data
     data_scaled = scaler.fit_transform(data)
 
@@ -124,7 +124,7 @@ def _detect_outliers(data: gpd.GeoDataFrame, scaler: StandardScaler, threshold_p
     # Remove outliers from the current dataset for the next iteration
     return data[~outliers], outlier_count
 
-def plot_outlier_analysis(gdf: gpd.GeoDataFrame, op_filename: Path, **kwargs) -> None:
+def plot_outlier_analysis(gdf: gpd.GeoDataFrame | pd.DataFrame, op_filename: Path, **kwargs) -> None:
     verbose: bool = kwargs.get('verbose', False)
     title: str = kwargs.get('plot_title', 'Plot title not set')
     with_smoothed_depths: bool = kwargs.get('with_smoothed', False)
@@ -179,7 +179,7 @@ def outlier_detect_df(gdf: pd.DataFrame | gpd.GeoDataFrame, **kwargs) -> pd.Seri
         threshold_percentile=98,
         original_gdf=gdf
     )
-    assert isinstance(filtered_data_2, gpd.GeoDataFrame) or isinstance(filtered_data_1, pd.DataFrame)
+    assert isinstance(filtered_data_2, gpd.GeoDataFrame) or isinstance(filtered_data_2, pd.DataFrame)
     if verbose:
         print(f"[blue]Debug:[/] Outliers detected in Pass 2: {outlier_count_2}")
 
@@ -195,6 +195,7 @@ def outlier_detect_df(gdf: pd.DataFrame | gpd.GeoDataFrame, **kwargs) -> pd.Seri
     )
     if verbose:
         print(f"[blue]Debug:[/] Outliers detected in Pass 3: {outlier_count_3}")
+    assert isinstance(final_smoothed_depth, pd.Series)
     return final_smoothed_depth
 
 def outlier_detect_gpkg(filename: Path, output: Path, **kwargs) -> bool:
@@ -252,7 +253,7 @@ def create_transit_ids(df: pd.DataFrame, max_hours_gap: float = 4.0, max_days_du
     df['transit_id'] = transit_ids
     return df
 
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def _haversine(lat1: pd.Series, lon1: pd.Series, lat2: pd.Series, lon2: pd.Series) -> np.ndarray:
     """
     Calculate the great-circle distance between two points on the Earth.
     Parameters (lat1, lon1, lat2, lon2) are in decimal degrees.
@@ -299,7 +300,7 @@ def calculate_vessel_speed(group: pd.DataFrame) -> pd.DataFrame:
     return group
 
 def make_transits_by_id(con: duckdb.DuckDBPyConnection, unique_id: str, output_dir: Path,
-                        maxgap: float, maxduration: float, **kwargs) -> None:
+                        maxgap: float, maxduration: float, epsg: int, **kwargs) -> None:
     verbose: bool = kwargs.get('verbose', False)
     df = transit_df(con, unique_id)
     df = create_transit_ids(df, maxgap, maxduration)
@@ -321,7 +322,7 @@ def make_transits_by_id(con: duckdb.DuckDBPyConnection, unique_id: str, output_d
         update_db_for_transits(con, group)
         gdf = gpd.GeoDataFrame(group, geometry=gpd.points_from_xy(group.lon, group.lat))
         gdf.set_crs(epsg=4326, inplace=True)
-        gdf.to_crs(epsg=26903, inplace=True)  # Adjust EPSG as needed
+        gdf.to_crs(epsg=epsg, inplace=True)
         start_date = group['time'].min().strftime('%Y%m%d%H%M%S')
         end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
         gpkg_filename: Path = output_dir / f"{unique_id}_{start_date}_{end_date}.gpkg"

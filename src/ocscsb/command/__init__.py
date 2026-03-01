@@ -15,14 +15,15 @@ from ocscsb.library.database import (
     replace_depth_diff,
     apply_depth_offsets,
     gpkg_outliers_to_db,
-    augment_db_for_transits
+    augment_db_for_transits,
+    export_db_to_gpkg,
 )
 from ocscsb.library.analysis import (
     generate_offset_histograms,
     outlier_detect_gpkg,
     make_transits_by_id
 )
-from ocscsb.library.geotiff import gpkgs_to_geotiffs
+from ocscsb.library.geotiff import gpkgs_to_geotiffs, rasterize_geotiff
 
 @click.version_option(version=version)
 @click.group()
@@ -131,8 +132,10 @@ def outlier_ingest(input_dir: Path, db_file: Path, verbose: bool) -> None:
 @click.argument('source_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('cleaned_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.option('--geotiffs', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              default=Path('DEFAULT'),
               help='Directory for GeoTIFF output per GeoPackage')
 @click.option('--plots', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              default=Path('DEFAULT'),
               help='Directory for plots of outliers')
 @click.option('-v', '--verbose', type=bool, is_flag=True, default=False, help='Display verbose messages on execution status')
 def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: Path, verbose: bool) -> None:
@@ -144,7 +147,7 @@ def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: P
     options: dict = {
         'verbose': verbose,
     }
-    if plots.exists():
+    if plots.name != 'DEFAULT':
         options['plot_dir'] = str(plots)
 
     n_processed: int = 0
@@ -153,7 +156,7 @@ def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: P
         n_total += 1
         if outlier_detect_gpkg(filename, cleaned_dir / 'Processed_' / filename.name, **options):
             n_processed += 1
-    if geotiffs.exists():
+    if geotiffs.name != 'DEFAULT':
         gpkgs_to_geotiffs(cleaned_dir, geotiffs, **options)
 
     if verbose:
@@ -161,16 +164,22 @@ def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: P
 
 @click.command()
 @click.argument('db_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
-@click.arguemnt('output_dir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('output_dir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path))
 @click.option('--geotiffs', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              default=Path('DEFAULT'),
               help='Directory for GeoTIFF output per GeoPackage')
 @click.option('--plots', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+              default=Path('DEFAULT'),
               help='Directory for plots of outliers')
 @click.option('--maxgap', type=float, default=4.0, help='Maximum gap (hours) between points in a transit')
 @click.option('--maxduration', type=float, default=7.0, help='Maximum duration (days) in transits')
 @click.option('--resolution', type=float, default=8.0, help='GeoTIFF output resolution, if required')
-@click.option('-v', '--verbose', type=bool, is_flag=True, default=False, help='Display verbose messages on execution status')
-def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path, maxgap: float, maxduration: float, resolution: float, verbose: bool) -> None:
+@click.option('--epsg', type=int, default=4326, help='Set EPSG for output of GeoTIFFs')
+@click.option('-v', '--verbose', type=bool, is_flag=True, default=False,
+              help='Display verbose messages on execution status')
+def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path,
+                    maxgap: float, maxduration: float, resolution: float, epsg: int,
+                    verbose: bool) -> None:
     '''Compute transits for unique ids, and output GeoPackages.
 
     This command computes transits from the observations in DB_FILE, and exports the transit as a
@@ -180,10 +189,10 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
     options: dict = {
         'verbose': verbose
     }
-    if geotiffs.exists():
+    if geotiffs.name != 'DEFAULT':
         options['geotiff_dir'] = geotiffs
         options['geotiff_res'] = resolution
-    if plots.exists():
+    if plots.name != 'DEFAULT':
         options['plots_dir'] = plots
     
     with duckdb.connect(database=db_file.as_posix()) as con:
@@ -191,7 +200,39 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
         augment_db_for_transits(con, **options)
         unique_ids = db_unique_ids(con)
         for unique_id in unique_ids:
-            make_transits_by_id(con, unique_id, output_dir, maxgap, maxduration, **options)
+            make_transits_by_id(con, unique_id, output_dir, maxgap, maxduration, epsg, **options)
+
+@click.command()
+@click.argument('db_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
+@click.option('--gpkg',
+              type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
+              default=Path('DEFAULT'),
+              help='Set GeoPackage output file (default is same as db_file.gpkg)')
+@click.option('--geotiff',
+              type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
+              default=Path('DEFAULT'),
+              help='Generate GeoTIFF from non-outliers with given name')
+@click.option('--resolution',
+              type=float, default=10.0,
+              help='GeoTIFF output resolution, if required')
+@click.option('--epsg',
+              type=int, default=4326,
+              help='Set EPSG for output')
+@click.option('-v', '--verbose',
+              type=bool, is_flag=True, default=False,
+              help='Display verbose messages on execution status')
+def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg: int, verbose: bool) -> None:
+    options: dict = {
+        'verbose': verbose,
+        'epsg': epsg
+    }
+    if gpkg.name == 'DEFAULT':
+        gpkg_name: Path = db_file.with_suffix('.gpkg')
+    else:
+        gpkg_name: Path = gpkg
+    gdf = export_db_to_gpkg(db_file, gpkg_name, **options)
+    if geotiff.name != 'DEFAULT':
+        rasterize_geotiff(gdf, geotiff, resolution)
 
 cli.add_command(scrape)
 cli.add_command(ingest)
@@ -200,3 +241,4 @@ cli.add_command(apply_offsets)
 cli.add_command(outlier_ingest)
 cli.add_command(outlier_detect)
 cli.add_command(export_transits)
+cli.add_command(export_db)
