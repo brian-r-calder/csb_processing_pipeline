@@ -1,10 +1,13 @@
+from typing import cast, Any
 from pathlib import Path
 import numpy as np
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon
+import pyproj
 import rasterio
 from rasterio.transform import from_origin, from_bounds
 from rasterio.features import rasterize
+from rasterio.warp import transform_bounds
 from traceback import format_exc
 from rich import print
 
@@ -121,3 +124,94 @@ def gpkgs_to_geotiffs(source_dir: Path, dest_dir: Path, resolution: float = 8.0,
 
         except Exception as e:
             print(f"[red]Error:[/] Failed generating GeoTIFF for {filename}: {e}")
+
+def get_bbox_wgs84(filename: Path, **kwargs) -> dict[str,Any]:
+    '''
+    Return the boiunding box from a given GeoTIFF file (typically a BlueTopo tile in this
+    context), converting into WGS84 so that it's comparable to the depth observations.
+
+    :param: Path to the GeoTIFF to load
+    :return: Dictionary for the bounds (float) and the CRS for the GeoTIFF
+    '''
+    verbose = kwargs.get('verbose', False)
+    with rasterio.open(filename) as src:
+        src_crs = src.crs
+        src_bounds = src.bounds  # (left, bottom, right, top)
+        if verbose:
+            print(f"[blue]Debug:[/] BlueTopo tile native CRS: {src_crs}")
+            print(f"[blue]Debug:[/] Original bounds (native CRS): {src_bounds}")
+        
+        # Transform bounds to WGS84 (EPSG:4326)
+        dst_crs = "EPSG:4326"
+        bounds_wgs84 = transform_bounds(
+            src_crs, dst_crs,
+            src_bounds.left, src_bounds.bottom,
+            src_bounds.right, src_bounds.top,
+            densify_pts=21
+        )
+        if verbose:
+            print(f"[blue]Debug:[/] Transformed bounds in WGS84: {bounds_wgs84}")
+        
+        return {
+            "min_lon": bounds_wgs84[0],
+            "min_lat": bounds_wgs84[1],
+            "max_lon": bounds_wgs84[2],
+            "max_lat": bounds_wgs84[3],
+            "src_crs": src_crs
+        }
+
+def sample_grid(filename: Path, gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Reprojects the GeoDataFrame from WGS84 to the target CRS (the BlueTopo tile's CRS),
+    then uses Rasterio's vectorized sampling to retrieve the BlueTopo value for each point.
+    The sampled value is added as a new column 'bluetopo_value' and discrepancy is computed.
+    """
+    with rasterio.open(filename) as src:
+        gdf_proj = gdf.to_crs(src.crs)
+        coords = [(cast(Point, geom).x, cast(Point, geom).y) for geom in gdf_proj.geometry]
+        sampled_values = [val[0] for val in src.sample(coords)]
+    gdf['bluetopo_value'] = sampled_values
+    gdf['discrepancy'] = gdf['depth_mod'] - gdf['bluetopo_value']
+    return gdf
+
+def diff_grid_to_geotiff(grid: gpd.GeoDataFrame, filename: Path, nodata: int=1000000, **kwargs) -> None:
+    """
+    Exports the aggregated difference grid (with a 'mean_diff' column) to a GeoTIFF.
+    Grid cells with no data are assigned the specified nodata value.
+    """
+    verbose = kwargs.get('verbose', False)
+    bounds = grid.total_bounds  # [xmin, ymin, xmax, ymax]
+    xmin, ymin, xmax, ymax = bounds
+    # Use the width of the first grid cell to determine resolution.
+    sample_bounds = cast(Polygon, grid.geometry.iloc[0]).bounds
+    cell_width = sample_bounds[2] - sample_bounds[0]
+    resolution = cell_width
+    ncols = int((xmax - xmin) / resolution)
+    nrows = int((ymax - ymin) / resolution)
+    transform = from_bounds(xmin, ymin, xmax, ymax, ncols, nrows)
+    
+    # Use the 'mean_diff' value for each grid cell; fill missing cells with nodata.
+    shapes_gen = ((geom, value) for geom, value in zip(grid.geometry, grid['mean_diff'].fillna(nodata)))
+    raster_array = rasterize(
+        shapes_gen,
+        out_shape=(nrows, ncols),
+        transform=transform,
+        fill=nodata,
+        dtype='float32'
+    )
+    assert isinstance(grid.crs, pyproj.CRS)
+    out_meta = {
+        'driver': 'GTiff',
+        'height': nrows,
+        'width': ncols,
+        'count': 1,
+        'dtype': 'float32',
+        'crs': grid.crs.to_string(),
+        'transform': transform,
+        'nodata': nodata
+    }
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(filename, "w", **out_meta) as dst:
+        dst.write(raster_array, 1)
+    if verbose:
+        print(f"[blue]Debug:[/] Difference grid GeoTIFF created at {filename}")

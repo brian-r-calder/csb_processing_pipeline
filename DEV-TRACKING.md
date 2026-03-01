@@ -91,11 +91,29 @@ The individual Python scripts for manipulations are translated primarily into fu
     library/geotiff
 
         rasterize_geotiff() [Note not create_geotiff() due to different rasterio usage]
-        
+
+* 10-csb_differencing_visualizations.py -> diff-viz
+
+    library/geotiff
+
+        get_bbox_wgs84()
+        sample_grid()
+        diff_grid_to_geotiff()
+
+    library/database
+
+        query_by_bbox()
+
+    library/analysis
+
+        plot_surface_diff_pmf()
+        plot_surface_diff()
+        aggregate_points()
+
+
 ## Functions To Go
 
 * 2-csb_processing.py
-* 10-csb_differencing_visualizations.py
 
 # Outstanding Questions
 

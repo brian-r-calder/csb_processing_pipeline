@@ -17,13 +17,23 @@ from ocscsb.library.database import (
     gpkg_outliers_to_db,
     augment_db_for_transits,
     export_db_to_gpkg,
+    query_by_bbox,
 )
 from ocscsb.library.analysis import (
     generate_offset_histograms,
     outlier_detect_gpkg,
-    make_transits_by_id
+    make_transits_by_id,
+    plot_surface_diff_pmf,
+    aggregate_points,
+    plot_surface_diff,
 )
-from ocscsb.library.geotiff import gpkgs_to_geotiffs, rasterize_geotiff
+from ocscsb.library.geotiff import (
+    gpkgs_to_geotiffs,
+    rasterize_geotiff,
+    get_bbox_wgs84,
+    sample_grid,
+    diff_grid_to_geotiff
+)
 
 @click.version_option(version=version)
 @click.group()
@@ -234,6 +244,29 @@ def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg:
     if geotiff.name != 'DEFAULT':
         rasterize_geotiff(gdf, geotiff, resolution)
 
+@click.command()
+@click.argument('db_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
+@click.argument('ref_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
+@click.argument('plot_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('geotiff', type=click.Path(file_okay=True, dir_okay=False, path_type=Path))
+@click.option('--resolution', type=float, default=10.0, help='Output aggregate grid resolution (m)')
+@click.option('-v', '--verbose',
+              type=bool, is_flag=True, default=False,
+              help='Display verbose messages on execution status')
+def diff_viz(db_file: Path, ref_file: Path, plot_dir: Path, geotiff: Path, resolution: float, verbose: bool) -> None:
+    bbox = get_bbox_wgs84(ref_file)
+    with duckdb.connect(database=db_file) as con:
+        gdf: gpd.GeoDataFrame = query_by_bbox(con, bbox)
+        if gdf.empty:
+            print(f'[orange]Warning:[/] No CSB points found in reference bounding box - ignoring.')
+            return
+        gdf = sample_grid(ref_file, gdf)
+        plot_surface_diff_pmf(gdf, plot_dir / f'histogram_{db_file.name}_{ref_file.name}.png')
+        grid = aggregate_points(gdf, bbox['src_crs'], resolution)
+        plot_surface_diff(grid,
+                          plot_dir / f'difference_{db_file.name}_{ref_file.name}_{resolution}.png')
+        diff_grid_to_geotiff(grid, geotiff, verbose=verbose)
+
 cli.add_command(scrape)
 cli.add_command(ingest)
 cli.add_command(offset_pmfs)
@@ -242,3 +275,4 @@ cli.add_command(outlier_ingest)
 cli.add_command(outlier_detect)
 cli.add_command(export_transits)
 cli.add_command(export_db)
+cli.add_command(diff_viz)

@@ -3,6 +3,7 @@ import duckdb
 import hashlib
 import pandas as pd
 import geopandas as gpd
+from shapely.geometry import Point
 from rich import print
 
 def enable_spatial(con: duckdb.DuckDBPyConnection) -> None:
@@ -324,4 +325,23 @@ def export_db_to_gpkg(db_file: Path, gpkg_file: Path, **kwargs) -> gpd.GeoDataFr
         gdf.to_file(gpkg_file, driver='GPKG')
         if verbose:
             print(f'[blue]Debug:[/] GeoPackage successfully written to {gpkg_file}.')
+    return gdf
+
+def query_by_bbox(con: duckdb.DuckDBPyConnection, bbox: dict[str,float]) -> gpd.GeoDataFrame:
+    """
+    Queries the DuckDB CSB table for points within the
+    provided bounding box (in WGS84) that are not flagged as outliers.
+    Assumes the table contains 'lon', 'lat', 'depth_mod', and 'Outlier' columns.
+    """
+    query = f"""
+    SELECT *
+    FROM csb
+    WHERE CAST(lon AS DOUBLE) BETWEEN {bbox['min_lon']} AND {bbox['max_lon']}
+      AND CAST(lat AS DOUBLE) BETWEEN {bbox['min_lat']} AND {bbox['max_lat']}
+      AND depth_mod IS NOT NULL
+      AND Outlier IS FALSE
+    """
+    df = con.execute(query).fetchdf()
+    geometry = [Point(xy) for xy in zip(df.lon, df.lat)]
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
     return gdf

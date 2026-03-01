@@ -2,9 +2,12 @@ from pathlib import Path
 from datetime import timedelta
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import duckdb
 import pandas as pd
 import geopandas as gpd
+from shapely.geometry import box
+import pyproj
 import numpy as np
 from sklearn.experimental import enable_iterative_imputer  # this enables the sklearn experimental feature
 from sklearn.impute import IterativeImputer
@@ -340,3 +343,76 @@ def make_transits_by_id(con: duckdb.DuckDBPyConnection, unique_id: str, output_d
             else:
                 if verbose:
                     print(f"[orange]Warning:[/] No non-outlier points in transit {transit_id} to export as GeoTIFF.")
+
+def plot_surface_diff_pmf(gdf: gpd.GeoDataFrame, filename: Path) -> None:
+    """
+    Saves a 2D histogram comparing CSB depth_mod vs. BlueTopo values.
+    A red dashed line indicates the 1:1 line.
+    """
+    plt.figure(figsize=(12,10))
+    plt.hist2d(gdf['depth_mod'], gdf['bluetopo_value'], bins=(150,150), cmin=1, cmap='viridis_r')
+    plt.xlabel('CSB depth_mod')
+    plt.ylabel('BlueTopo value')
+    plt.title('2D Histogram: CSB depth_mod vs. BlueTopo value')
+    plt.colorbar(label='Counts')
+    min_val = min(gdf['depth_mod'].min(), gdf['bluetopo_value'].min())
+    max_val = max(gdf['depth_mod'].max(), gdf['bluetopo_value'].max())
+    plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='1:1 line')
+    plt.legend()
+    plt.savefig(fname=filename, dpi=300)
+    plt.close()
+
+def plot_surface_diff(grid: gpd.GeoDataFrame, filename: Path) -> None:
+    """
+    Bins the absolute mean discrepancy for each grid cell into discrete intervals
+    and plots the grid cells colored accordingly, then adds a legend.
+    Binning scheme:
+        0 to 1.0 m     : dark green (#006400)
+        1.0 to 1.5 m   : light green/yellow (#ADFF2F)
+        1.5 to 2.0 m   : orange (#FFA500)
+        >=2.0 m        : red (#FF0000)
+        No data        : light gray (#D3D3D3)
+    """
+    grid['abs_diff'] = grid['mean_diff'].abs()
+    bins = [0, 1, 1.5, 2, np.inf]
+    colors = ['#006400', '#ADFF2F', '#FFA500', '#FF0000']
+    grid['color'] = pd.cut(grid['abs_diff'], bins=bins, labels=colors, include_lowest=True)
+    grid['color'] = grid['color'].cat.add_categories(['#D3D3D3']).fillna('#D3D3D3')
+    
+    _, ax = plt.subplots(figsize=(10,8))
+    grid.plot(ax=ax, color=grid['color'], edgecolor=None, alpha=0.7)
+    xmin, ymin, xmax, ymax = grid.total_bounds
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_title("Difference Grid: Mean Discrepancy (CSB depth_mod - BlueTopo)")
+    legend_patches = [
+        mpatches.Patch(color='#006400', label='0 - 1.0 m'),
+        mpatches.Patch(color='#ADFF2F', label='1.0 - 1.5 m'),
+        mpatches.Patch(color='#FFA500', label='1.5 - 2.0 m'),
+        mpatches.Patch(color='#FF0000', label='>= 2.0 m'),
+        mpatches.Patch(color='#D3D3D3', label='No Data')
+    ]
+    ax.legend(handles=legend_patches, title="Mean Discrepancy", loc='upper left', bbox_to_anchor=(1.05, 1))
+    plt.tight_layout()
+    plt.savefig(fname=filename, dpi=300)
+    plt.close()
+
+def aggregate_points(gdf: gpd.GeoDataFrame, crs: pyproj.CRS, resolution: float) -> gpd.GeoDataFrame:
+    '''
+    Project the points given into the specified CRS, and then find the mean in cells of size
+    resolution metres over the bounding box of the points, returning the mean point value in
+    each cell.
+    '''
+    gdf_proj = gdf.to_crs(crs)
+    xmin, ymin, xmax, ymax = gdf_proj.total_bounds
+    grid_cells = []
+    for x in np.arange(xmin, xmax, resolution):
+        for y in np.arange(ymin, ymax, resolution):
+            grid_cells.append(box(x, y, x + resolution, y + resolution))
+    grid = gpd.GeoDataFrame({'geometry': grid_cells}, crs=gdf_proj.crs)
+
+    joined = gpd.sjoin(gdf_proj, grid, how='left', predicate='within')
+    agg = joined.groupby('index_right').agg(mean_diff=('discrepancy', 'mean')).reset_index()
+    grid = grid.reset_index().rename(columns={'index': 'grid_index'})
+    grid = grid.merge(agg, left_on='grid_index', right_on='index_right', how='left')
+    return grid
