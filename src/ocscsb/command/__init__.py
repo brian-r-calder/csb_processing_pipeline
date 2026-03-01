@@ -168,8 +168,9 @@ def outlier_detect(source_dir: Path, cleaned_dir: Path, geotiffs: Path, plots: P
               help='Directory for plots of outliers')
 @click.option('--maxgap', type=float, default=4.0, help='Maximum gap (hours) between points in a transit')
 @click.option('--maxduration', type=float, default=7.0, help='Maximum duration (days) in transits')
+@click.option('--resolution', type=float, default=8.0, help='GeoTIFF output resolution, if required')
 @click.option('-v', '--verbose', type=bool, is_flag=True, default=False, help='Display verbose messages on execution status')
-def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path, maxgap: float, maxduration: float, verbose: bool) -> None:
+def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path, maxgap: float, maxduration: float, resolution: float, verbose: bool) -> None:
     '''Compute transits for unique ids, and output GeoPackages.
 
     This command computes transits from the observations in DB_FILE, and exports the transit as a
@@ -181,6 +182,7 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
     }
     if geotiffs.exists():
         options['geotiff_dir'] = geotiffs
+        options['geotiff_res'] = resolution
     if plots.exists():
         options['plots_dir'] = plots
     

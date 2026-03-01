@@ -13,7 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from scipy.ndimage import uniform_filter1d
 from rich import print
 
-from ocscsb.library.database import transit_df
+from ocscsb.library.database import transit_df, update_db_for_transits
+from ocscsb.library.geotiff import create_geotiff
 
 def generate_offset_histograms(db_file: Path, export_dir: Path, **kwargs) -> tuple[int,int]:
     verbose: bool = kwargs.get('verbose', False)
@@ -125,6 +126,8 @@ def _detect_outliers(data: gpd.GeoDataFrame, scaler: StandardScaler, threshold_p
 
 def plot_outlier_analysis(gdf: gpd.GeoDataFrame, op_filename: Path, **kwargs) -> None:
     verbose: bool = kwargs.get('verbose', False)
+    title: str = kwargs.get('plot_title', 'Plot title not set')
+    with_smoothed_depths: bool = kwargs.get('with_smoothed', False)
     
     _, ax = plt.subplots(figsize=(12, 6))
     ax.scatter(
@@ -135,11 +138,12 @@ def plot_outlier_analysis(gdf: gpd.GeoDataFrame, op_filename: Path, **kwargs) ->
         gdf[gdf['Outlier']].index, gdf[gdf['Outlier']]['depth'],
         color='red', s=10, label="Outlier"
     )
-    ax.plot(
-        gdf.index, gdf['Final_Smoothed_Depth'],
-        color='green', linewidth=1.5, label="Final Smoothed Depth"
-    )
-    ax.set_title(f"Final Outlier Detection for {op_filename}")
+    if with_smoothed_depths:
+        ax.plot(
+            gdf.index, gdf['Final_Smoothed_Depth'],
+            color='green', linewidth=1.5, label="Final Smoothed Depth"
+        )
+    ax.set_title(title)
     ax.set_xlabel("Index")
     ax.set_ylabel("Depth")
     ax.legend()
@@ -147,6 +151,51 @@ def plot_outlier_analysis(gdf: gpd.GeoDataFrame, op_filename: Path, **kwargs) ->
     plt.close()
     if verbose:
         print(f"Saved plot to {op_filename}")
+
+def outlier_detect_df(gdf: pd.DataFrame | gpd.GeoDataFrame, **kwargs) -> pd.Series:
+    verbose: bool = kwargs.get('verbose', False)
+    gdf['Outlier'] = False
+    processed_data = gdf[["lat", "lon", "depth"]]
+    scaler = StandardScaler()
+    # Pass 1: Lenient threshold (99th percentile)
+    if verbose:
+        print("[blue]Debug:[/] First Pass (Lenient Threshold - 99th percentile):")
+    filtered_data_1, outlier_count_1 = _detect_outliers(
+        processed_data.copy(),
+        scaler,
+        threshold_percentile=99,
+        original_gdf=gdf
+    )
+    assert isinstance(filtered_data_1, gpd.GeoDataFrame) or isinstance(filtered_data_1, pd.DataFrame)
+    if verbose:
+        print(f"[blue]Debug:[/] Outliers detected in Pass 1: {outlier_count_1}")
+
+    # Pass 2: Moderate threshold (98th percentile)
+    if verbose:
+        print("[blue]Debug:[/] Second Pass (Moderate Threshold - 98th percentile):")
+    filtered_data_2, outlier_count_2 = _detect_outliers(
+        filtered_data_1.copy(),
+        scaler,
+        threshold_percentile=98,
+        original_gdf=gdf
+    )
+    assert isinstance(filtered_data_2, gpd.GeoDataFrame) or isinstance(filtered_data_1, pd.DataFrame)
+    if verbose:
+        print(f"[blue]Debug:[/] Outliers detected in Pass 2: {outlier_count_2}")
+
+    # Pass 3: Final threshold (98th percentile, return smoothed depth)
+    if verbose:
+        print("[blue]Debug:[/] Third Pass (Strict Threshold - 98th percentile):")
+    final_smoothed_depth, outlier_count_3 = _detect_outliers(
+        filtered_data_2.copy(),
+        scaler,
+        threshold_percentile=98,
+        original_gdf=gdf,
+        return_smoothed=True
+    )
+    if verbose:
+        print(f"[blue]Debug:[/] Outliers detected in Pass 3: {outlier_count_3}")
+    return final_smoothed_depth
 
 def outlier_detect_gpkg(filename: Path, output: Path, **kwargs) -> bool:
     verbose: bool = kwargs.get('verbose', False)
@@ -167,49 +216,8 @@ def outlier_detect_gpkg(filename: Path, output: Path, **kwargs) -> bool:
         if verbose:
             print(f"[red]Error:[/] Skipping {filename}: Missing required columns.")
         return False
-        
-    gdf['Outlier'] = False
-    processed_data = gdf[["lat", "lon", "depth"]]
-    scaler = StandardScaler()
     try:
-        # Pass 1: Lenient threshold (99th percentile)
-        if verbose:
-            print("[blue]Debug:[/] First Pass (Lenient Threshold - 99th percentile):")
-        filtered_data_1, outlier_count_1 = _detect_outliers(
-            processed_data.copy(),
-            scaler,
-            threshold_percentile=99,
-            original_gdf=gdf
-        )
-        assert isinstance(filtered_data_1, gpd.GeoDataFrame)
-        if verbose:
-            print(f"[blue]Debug:[/] Outliers detected in Pass 1: {outlier_count_1}")
-
-        # Pass 2: Moderate threshold (98th percentile)
-        if verbose:
-            print("[blue]Debug:[/] Second Pass (Moderate Threshold - 98th percentile):")
-        filtered_data_2, outlier_count_2 = _detect_outliers(
-            filtered_data_1.copy(),
-            scaler,
-            threshold_percentile=98,
-            original_gdf=gdf
-        )
-        assert isinstance(filtered_data_2, gpd.GeoDataFrame)
-        if verbose:
-            print(f"[blue]Debug:[/] Outliers detected in Pass 2: {outlier_count_2}")
-
-        # Pass 3: Final threshold (98th percentile, return smoothed depth)
-        if verbose:
-            print("[blue]Debug:[/] Third Pass (Strict Threshold - 98th percentile):")
-        final_smoothed_depth, outlier_count_3 = _detect_outliers(
-            filtered_data_2.copy(),
-            scaler,
-            threshold_percentile=98,
-            original_gdf=gdf,
-            return_smoothed=True
-        )
-        if verbose:
-            print(f"[blue]Debug:[/] Outliers detected in Pass 3: {outlier_count_3}")
+        final_smoothed_depth = outlier_detect_df(gdf, **kwargs)
 
         # Save the processed GeoDataFrame to a new GeoPackage
         gdf.to_file(output, driver='GPKG')
@@ -219,7 +227,9 @@ def outlier_detect_gpkg(filename: Path, output: Path, **kwargs) -> bool:
         if plot_dir:
             # Assign the final smoothed depth back to the GeoDataFrame
             gdf['Final_Smoothed_Depth'] = final_smoothed_depth
-            plot_outlier_analysis(gdf, Path(plot_dir) / filename.with_suffix('.png').name, **kwargs)
+            op_filename: Path = Path(plot_dir) / filename.with_suffix('.png').name
+            plot_outlier_analysis(gdf, op_filename, plot_title=f"Final Outlier Detection for {op_filename}",
+                                  with_smoothed=True, **kwargs)
 
     except Exception as e:
         print(f"[red]Error:[/] Failed processing {filename}: {e}")
@@ -297,8 +307,35 @@ def make_transits_by_id(con: duckdb.DuckDBPyConnection, unique_id: str, output_d
         if verbose:
             print(f"\n[blue]Debug:[/] Processing unique_id {unique_id}, transit {transit_id}")
         group['Outlier'] = False
-        # TODO: Convert remainder of 6-export_transits_to_gpkg_and_tiff_speed.py
-        # This includes refactoring the outlier detection from outlier_detect_gpkg so that we can
-        # use that independently of the surrounding loading of files, etc. (since this code needs
-        # to apply by transit_id group, rather than a whole GeoPackage, and we don't want to have
-        # to write a file then read it again)
+        data_for_outlier = group[['lat', 'lon', 'depth']].copy()
+        group['Final_Smoothed_Depth'] = outlier_detect_df(data_for_outlier, verbose=verbose)
+        group = calculate_vessel_speed(group)
+        group['Outlier'] = group['Outlier'].astype(bool)
+
+        if 'plots_dir' in kwargs:
+            plot_filename = Path(kwargs['plots_dir']) / f'{unique_id}_{transit_id}_outlier_plot.png'
+            plot_outlier_analysis(group, plot_filename,
+                                  title=f"Outlier Detection for Transit {transit_id} (unique_id: {unique_id})",
+                                  **kwargs)
+            
+        update_db_for_transits(con, group)
+        gdf = gpd.GeoDataFrame(group, geometry=gpd.points_from_xy(group.lon, group.lat))
+        gdf.set_crs(epsg=4326, inplace=True)
+        gdf.to_crs(epsg=26903, inplace=True)  # Adjust EPSG as needed
+        start_date = group['time'].min().strftime('%Y%m%d%H%M%S')
+        end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
+        gpkg_filename: Path = output_dir / f"{unique_id}_{start_date}_{end_date}.gpkg"
+        gdf.to_file(gpkg_filename, driver='GPKG')
+        if verbose:
+            print(f"[blue]Debug:[/] Exported GeoPackage {gpkg_filename}")
+
+        if 'geotiff_dir' in kwargs:
+            non_outlier_gdf = gdf[gdf['Outlier'] == False]
+            if not non_outlier_gdf.empty:
+                tiff_filename = gpkg_filename.with_suffix('.tif')
+                create_geotiff(non_outlier_gdf, tiff_filename, kwargs['geotiff_res'])
+                if verbose:
+                    print(f"[blue]Debug:[/] Exported GeoTIFF {tiff_filename}")
+            else:
+                if verbose:
+                    print(f"[orange]Warning:[/] No non-outlier points in transit {transit_id} to export as GeoTIFF.")

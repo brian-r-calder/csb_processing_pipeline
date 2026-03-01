@@ -271,3 +271,36 @@ def transit_df(con: duckdb.DuckDBPyConnection, unique_id: str) -> pd.DataFrame:
     df['time'] = pd.to_datetime(df['time'], format='%Y%m%d %H:%M:%S')
 
     return df
+
+def update_db_for_transits(con: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> None:
+    updates = []
+    for _, row in df.iterrows():
+        updates.append((row['synthetic_key'], row['transit_id'], str(row['Outlier']).upper()))
+    if updates:
+        values_clause = ", ".join(
+            f"('{sk}', '{tid}', {outlier})" for sk, tid, outlier in updates
+        )
+        bulk_update_query = f"""
+        UPDATE csb
+        SET transit_id = t.transit_id, Outlier = t.outlier
+        FROM (VALUES {values_clause}) AS t(synthetic_key, transit_id, outlier)
+        WHERE csb.synthetic_key = t.synthetic_key;
+        """
+        con.execute(bulk_update_query)
+        print("Batch updated csb table for Outlier and transit_id for this transit group.")
+
+    speed_updates = []
+    for _, row in df.iterrows():
+        speed_updates.append((row['synthetic_key'], row['vessel_speed_smoothed']))
+    if speed_updates:
+        values_clause = ", ".join(
+            f"('{sk}', {speed})" for sk, speed in speed_updates
+        )
+        update_speed_query = f"""
+        UPDATE csb
+        SET vessel_speed_smoothed = t.speed
+        FROM (VALUES {values_clause}) AS t(synthetic_key, speed)
+        WHERE csb.synthetic_key = t.synthetic_key;
+        """
+        con.execute(update_speed_query)
+        print("Batch updated vessel speed values in csb table for this transit group.")

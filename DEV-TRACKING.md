@@ -40,6 +40,27 @@ The individual Python scripts for manipulations are translated primarily into fu
         
         apply_offsets()
 
+* 6-export_transits_to_gpkg_and_tiff_2.py
+* 6-export_transits_to_gpkg_and_tiff_speed.py -> export-transits
+
+    These appear to be mostly the same as each other, except that the second (developed a couple of days later) computes vessel speed and stores it.  The latter only, therefore, was converted.  Note that this uses some common routines (create_geotiff, _detect_outliers(), etc., and caused the refactoring of outlier_detect_gpkg() to extract the actual outlier detection on a DataFrame, allowing it to be reused for the outlier detection per transit group).
+
+    library/database
+
+        _add_column()
+        augment_db_for_transits()
+        transit_df()
+        update_db_for_transits()
+
+    library/analysis
+
+        outlier_detect_df()
+        outlier_detect_gpkg() (refactored)
+        create_transit_ids()
+        _haversine()
+        caculate_vessel_speed()
+        make_transits_by_id()
+
 * 8-insert_outlier_flags_in_duckdb.py -> outlier-ingest
 
     library/database
@@ -65,8 +86,6 @@ The individual Python scripts for manipulations are translated primarily into fu
 ## Functions To Go
 
 * 2-csb_processing.py
-* 6-export_transits_to_gpkg_and_tiff_2.py
-* 6-export_transits_to_gpkg_and_tiff_speed.py
 * 9-csb_export_all_points_create_geotiff.py
 * 10-csb_differencing_visualizations.py
 
