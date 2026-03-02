@@ -18,6 +18,7 @@ from ocscsb.library.database import (
     augment_db_for_transits,
     export_db_to_gpkg,
     query_by_bbox,
+    count_outliers,
 )
 from ocscsb.library.analysis import (
     generate_offset_histograms,
@@ -292,6 +293,22 @@ def diff_viz(db_file: Path, ref_file: Path, plot_dir: Path, geotiff: Path, resol
                           plot_dir / f'difference_{db_file.name}_{ref_file.name}_{resolution}.png')
         diff_grid_to_geotiff(grid, geotiff, verbose=verbose)
 
+@click.command()
+@click.argument('db_file', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
+def outlier_counts(db_file: Path) -> None:
+    '''Count the number of true/false outliers in db file.
+
+    This command counts the number of outliers found in DB_FILE, the number not marked as outlier, and
+    the total number of entries (which should be redundant, but you never know).
+    '''
+
+    with duckdb.connect(database=db_file) as con:
+        outlier, inlier, total = count_outliers(con)
+    
+    print(f'[blue]Info:[/] {total} observations, {inlier} inliers, {outlier} outliers.')
+    if inlier + outlier != total:
+        print(f'[orange]Warning:[/] total count is not equal to sum of inliers and outliers!')
+
 cli.add_command(scrape)
 cli.add_command(ingest)
 cli.add_command(offset_pmfs)
@@ -301,3 +318,4 @@ cli.add_command(outlier_detect)
 cli.add_command(export_transits)
 cli.add_command(export_db)
 cli.add_command(diff_viz)
+cli.add_command(outlier_counts)

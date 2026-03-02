@@ -1,3 +1,4 @@
+from typing import Any
 from pathlib import Path
 import duckdb
 import hashlib
@@ -349,3 +350,17 @@ def query_by_bbox(con: duckdb.DuckDBPyConnection, bbox: dict[str,float]) -> gpd.
     geometry = [Point(xy) for xy in zip(df.lon, df.lat)]
     gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
     return gdf
+
+def _mapCount(result: tuple[Any, ...]) -> int:
+    assert len(result) == 1
+    assert isinstance(result[0], int)
+    return int(result[0])
+
+def count_outliers(con: duckdb.DuckDBPyConnection) -> tuple[int,int,int]:
+    outlier_true = con.execute("SELECT COUNT(*) AS outlier_count FROM csb WHERE Outlier = 1").fetchone()
+    assert outlier_true
+    outlier_false = con.execute("SELECT COUNT(*) AS outlier_count FROM csb WHERE Outlier = FALSE").fetchone()
+    assert outlier_false
+    total_count = con.execute("SELECT COUNT(*) AS outlier_count FROM csb;").fetchone()
+    assert total_count
+    return _mapCount(outlier_true), _mapCount(outlier_false), _mapCount(total_count)
