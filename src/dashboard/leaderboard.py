@@ -5,20 +5,23 @@ Created on Fri Jul 19 16:38:14 2024
 @author: Anthony.R.Klemm
 """
 
-import os
+import sys
+from pathlib import Path
 import geopandas as gpd
 from shapely.geometry import LineString
 import pandas as pd
-pd.set_option('display.max_columns', None)
+import click
 
-def create_polylines(gdf):
+from ocscsb import __version__ as version
+
+def create_polylines(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     polylines = []
     for unique_id, group in gdf.groupby('unique_id'):
         group['time'] = pd.to_datetime(group['time'])
         group = group.sort_values('time')
         current_line = []
         last_time = None
-        for index, row in group.iterrows():
+        for _, row in group.iterrows():
             if last_time is not None:
                 time_diff = (row['time'] - last_time).total_seconds() / 60
                 if time_diff > 10:
@@ -36,24 +39,23 @@ def create_polylines(gdf):
     lines_gdf = gpd.GeoDataFrame(polylines, columns=['unique_id', 'geometry'], geometry='geometry')
     return lines_gdf
 
-def calculate_distances(lines_gdf):
+def calculate_distances(lines_gdf: gpd.GeoDataFrame) -> pd.Series[float]:
     distances = lines_gdf.geometry.length
     return distances
 
-def calculate_contributions_and_save_polylines(directory, output_csv, output_shapefile):
+def calculate_contributions_and_save_polylines(directory: Path, output_csv: Path, output_shapefile: Path, epsg: int) -> pd.DataFrame:
     all_polylines = []
     measurement_counts = pd.Series(dtype=int)  # Initialize an empty Series to hold measurement counts
     platform_name = {}  # Dictionary to map unique_id to platform_name
 
     # Fetch all geopackages
-    geopackages = [f for f in os.listdir(directory) if f.endswith('.gpkg')]
+    geopackages = [f for f in directory.glob('*.gpkg')]
     total_files = len(geopackages)  # Total number of geopackages
 
     for count, filename in enumerate(geopackages, start=1):
-        filepath = os.path.join(directory, filename)
-        print(f"Processing file {count} of {total_files}: {filepath}")
+        print(f"Processing file {count} of {total_files}: {filename}")
         
-        gdf = gpd.read_file(filepath)
+        gdf = gpd.read_file(filename)
 
         # Correct CRS check and setting
         if gdf.crs is None:
@@ -62,22 +64,24 @@ def calculate_contributions_and_save_polylines(directory, output_csv, output_sha
         if 'platform_name' in gdf.columns:
             platform_name.update(gdf.set_index('unique_id')['platform_name'].to_dict())
         else:
-            print(f"'platform_name' column not found in {filepath}. Skipping platform name mapping for this file.")
+            print(f"'platform_name' column not found in {filename}. Skipping platform name mapping for this file.")
 
         # Updating measurement counts
         measurement_counts = measurement_counts.add(gdf['unique_id'].value_counts(), fill_value=0)
 
-        gdf = gdf.to_crs(epsg=32618)
+        gdf = gdf.to_crs(epsg=epsg)
         lines_gdf = create_polylines(gdf)
         lines_gdf['Total Distance (meters)'] = calculate_distances(lines_gdf)
         lines_gdf['Platform Name'] = lines_gdf['unique_id'].map(platform_name)
         
         # Append to all_polylines for saving later
-        for index, row in lines_gdf.iterrows():
+        for _, row in lines_gdf.iterrows():
             all_polylines.append((row['unique_id'], row['geometry'], row['Total Distance (meters)'], row['Platform Name']))
 
     # Convert to DataFrame and GeoDataFrame for distances, platform names, and geometries
-    polylines_df = gpd.GeoDataFrame(all_polylines, columns=['unique_id', 'geometry', 'Total Distance (meters)', 'Platform Name'], crs="EPSG:32618")
+    polylines_df = gpd.GeoDataFrame(all_polylines,
+                                    columns=['unique_id', 'geometry', 'Total Distance (meters)', 'Platform Name'],
+                                    crs=f"EPSG:{epsg}")
 
     # Convert measurement counts to DataFrame and merge
     measurements_df = measurement_counts.reset_index(name='Contributed Measurements').rename(columns={'index': 'unique_id'})
@@ -98,8 +102,27 @@ def calculate_contributions_and_save_polylines(directory, output_csv, output_sha
 
     return leaderboard_df
 
-geopackage_directory = r'D:\CSB_texas\processed\processed_exports'
-output_leaderboard_csv = r'D:\CSB_texas\processed\processed_exports\leaderboard.csv'
-output_tracklines_shapefile = r'D:\CSB_texas\processed\processed_exports\tracklines.shp'
-leaderboard_df = calculate_contributions_and_save_polylines(geopackage_directory, output_leaderboard_csv, output_tracklines_shapefile)
-print(leaderboard_df.head())  # Look at the head of the leaderboard_df
+@click.command()
+@click.version_option(version=version)
+@click.argument('gpkg_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('leaderboard', type=click.Path(file_okay=True, dir_okay=False, path_type=Path))
+@click.argument('tracks', type=click.Path(file_okay=True, dir_okay=False, path_type=Path))
+@click.option('--epsg', type=int, default=32618, help='Set EPSG for output tracklines and DataFrame')
+@click.option('-v', '--verbose',
+              type=bool, is_flag=True, default=False,
+              help='Display verbose messages on execution status')
+def cli(gpkg_dir: Path, leaderboard: Path, tracks: Path, epsg: int, verbose: bool) -> None:
+    '''Generate leaderboard and trackline shapefile.
+
+    This command reads all of the GeoPackage files in GPKG_DIR and assembles a leaderboard for data
+    contributed (CSV output in LEADERBOARD), and a Shapefile for the tracklines (in TRACKS) from those
+    points, ready for display in the dashboard.
+    '''
+    leaderboard_df = calculate_contributions_and_save_polylines(gpkg_dir, leaderboard, tracks, epsg)
+    if verbose:
+        pd.set_option('display.max_columns', None)
+        print('Leaderboard Headers:')
+        print(leaderboard_df.head())  # Look at the head of the leaderboard_df
+
+if getattr(sys, 'frozen', False):
+    cli(sys.argv[1:])

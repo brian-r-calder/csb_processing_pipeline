@@ -26,11 +26,13 @@ classifiers = [
 [project.scripts]
 processing = "ocscsb.gui:cli"
 ocscsb = "ocscsb.command:cli"
+leaderboard = "dashboard.leaderboard:cli"
+dashboard = "dashboard.dashboard:cli"
 
 [tool.setuptools.dynamic]
 version = {attr = "ocscsb.__version__"}
 dependencies = {file = ["requirements.txt"]}
-optional-dependencies = {test = {file = ["requirements-test.txt"]}}
+optional-dependencies = {test = {file = ["requirements-test.txt"]}, dashboard = {file = ["requirements-dash.txt"]}}
 
 [tool.setuptools]
 include-package-data = true
