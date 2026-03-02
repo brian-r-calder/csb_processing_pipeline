@@ -309,6 +309,7 @@ def update_db_for_transits(con: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> 
 def export_db_to_gpkg(db_file: Path, gpkg_file: Path, **kwargs) -> gpd.GeoDataFrame:
     verbose = kwargs.get('verbose', False)
     epsg = kwargs.get('epsg', 4326)
+    shapefile = kwargs.get('shapefile', False)
     with duckdb.connect(database=db_file) as con:
         enable_spatial(con)
         df = con.execute("""SELECT * FROM csb WHERE Outlier = 0 AND depth_mod IS NOT NULL""").df()
@@ -322,7 +323,10 @@ def export_db_to_gpkg(db_file: Path, gpkg_file: Path, **kwargs) -> gpd.GeoDataFr
         gdf.to_crs(epsg=epsg, inplace=True)
 
         gpkg_file.parent.mkdir(parents=True, exist_ok=True)
-        gdf.to_file(gpkg_file, driver='GPKG')
+        if shapefile:
+            gdf.to_file(gpkg_file)
+        else:
+            gdf.to_file(gpkg_file, driver='GPKG')
         if verbose:
             print(f'[blue]Debug:[/] GeoPackage successfully written to {gpkg_file}.')
     return gdf

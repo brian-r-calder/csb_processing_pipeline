@@ -218,6 +218,10 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
               type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
               default=Path('DEFAULT'),
               help='Set GeoPackage output file (default is same as db_file.gpkg)')
+@click.option('--shapefile',
+              type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
+              default=Path('DEFAULT'),
+              help='Set output format to ShapeFile and set filename (default is GeoPackage)')
 @click.option('--geotiff',
               type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
               default=Path('DEFAULT'),
@@ -231,7 +235,7 @@ def export_transits(db_file: Path, output_dir: Path, geotiffs: Path, plots: Path
 @click.option('-v', '--verbose',
               type=bool, is_flag=True, default=False,
               help='Display verbose messages on execution status')
-def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg: int, verbose: bool) -> None:
+def export_db(db_file: Path, gpkg: Path, shapefile: Path, geotiff: Path, resolution: float, epsg: int, verbose: bool) -> None:
     '''Export DuckDB to GeoPackage, and optionally GeoTIFF.
 
     This command writes the points in the DuckDB DB_FILE as a GeoPackage in GPKG, projecting
@@ -246,6 +250,13 @@ def export_db(db_file: Path, gpkg: Path, geotiff: Path, resolution: float, epsg:
         gpkg_name: Path = db_file.with_suffix('.gpkg')
     else:
         gpkg_name: Path = gpkg
+    if shapefile.name != 'DEFAULT':
+        if gpkg.name != 'DEFAULT':
+            print('[red]Error:[/] You cannot specify both a GeoPackage and Shapefile name!')
+            return
+        options['shapefile'] = True
+        gpkg_name: Path = shapefile
+
     gdf = export_db_to_gpkg(db_file, gpkg_name, **options)
     if geotiff.name != 'DEFAULT':
         rasterize_geotiff(gdf, geotiff, resolution)
