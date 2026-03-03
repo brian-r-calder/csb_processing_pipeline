@@ -45,12 +45,14 @@ def cli():
 @click.argument('input_shp', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
 @click.argument('output_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('email', type=str)
-def scrape(input_shp: Path, output_dir: Path, email: str):
+@click.argument('start_date', type=str, default='1970-01-01')
+def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
     '''Search the DCDB archive API for CSB files from AWS.
 
     This command queries the DCDB point-store API on AWS to find the CSV versions of the contributed CSB
     files for a given tile of data, as specified in the input Shapefile INPUT_SHP.  The CSVs retrieved
-    are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information.
+    are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
+    filtered to be after START_DATE (default: 1970-01-01).
     '''
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 
@@ -72,7 +74,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str):
 
         # Now call process_tile for each tile
         try:
-            process_tile(bbox, email, tile_name, output_dir)
+            process_tile(bbox, email, start_date, tile_name, output_dir)
         except Exception as e:
             sys.exit(traceback.format_exc())
 

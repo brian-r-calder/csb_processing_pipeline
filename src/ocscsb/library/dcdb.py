@@ -37,24 +37,31 @@ def check_order_status(order_url: str, max_tries: int = 10) -> tuple[str,str|Non
 
 # Download CSV from the provided URL
 def download_csv(url: str, local_file_path: Path) -> bool:
-    response = requests.get(url)
-    if response.status_code == 200:
-        with open(local_file_path, 'wb') as file:
-            file.write(response.content)
-        print(f"CSV file has been downloaded to {local_file_path}")
-        return True
-    else:
-        print(f"Failed to download CSV. HTTP status code: {response.status_code}")
-        return False
+    try:
+        response = requests.get(url, stream=True, timeout=60)
+        if response.status_code == 200:
+            with open(local_file_path, 'wb') as file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    file.write(chunk)
+            print(f"[blue]Info:[/] CSV file has been downloaded to {local_file_path}")
+            return True
+        else:
+            print(f"[red]Error:[/] Failed to download CSV. HTTP status code: {response.status_code}")
+    except Exception as e:
+        print(f'[red]Error:[/] Failed downloading {url}: {e}')
+    return False
 
-def process_tile(bbox: str, email: str, tile_name: str, output_directory: Path, **kwargs) -> None:
+def process_tile(bbox: str, email: str, start_date: str, tile_name: str, output_directory: Path, **kwargs) -> None:
     print(f"[blue]Info:[/] Processing GRID_ID {tile_name} with bbox: {bbox}")
     payload = {
         "email": email,
         "bbox": bbox,
         "datasets": [
             {
-                "label": "csb"
+                "label": "csb",
+                "archive_date": {
+                    "start": start_date
+                }
             }
         ]
     }
@@ -65,8 +72,12 @@ def process_tile(bbox: str, email: str, tile_name: str, output_directory: Path, 
     else:
         url: str = 'https://q81rej0j12.execute-api.us-east-1.amazonaws.com/order'
 
-    response = requests.post(url, json=payload)
     print(f'[blue]Info:[/] sending request to API at {url}')
+    try:
+        response = requests.post(url, json=payload)
+    except Exception as e:
+        raise RuntimeError(f'[red]Error:[/] Network error submitting order for {tile_name}: {e}')
+    
     if response.status_code == 201:
         order_response = response.json()
 
@@ -75,32 +86,32 @@ def process_tile(bbox: str, email: str, tile_name: str, output_directory: Path, 
         print(f"[blue]Info:[/] Using status URL: {status_url}")  # Debug print to verify the status URL
 
         # Introduce a delay before checking the status for the first time
-        time.sleep(30)
+        time.sleep(5)
     else:
-        print(f"[red]Error:[/] Failed to create order for GRID_ID {tile_name}:", response.text)
-        return
+        raise RuntimeError(f"[red]Error:[/] Failed to create order for GRID_ID {tile_name}:", response.text)
 
     # Wait for order completion; check order status and download CSV
     retry_count = 0
-    max_retries = 5
-    status = 'initialized'
+    max_retries = 40 # ~ 10 min max wait
     
-    while status.lower() not in ['complete', 'error'] and retry_count < max_retries:
+    while retry_count < max_retries:
         status, output_location = check_order_status(status_url)
-        if status.lower() == 'complete':
+        if status == 'complete':
             print(f"[blue]Info:[/] Order completed for GRID_ID {tile_name}. Download data from: {output_location}")
-            download_url: str = 'https://order-pickup.s3.amazonaws.com/' + str(output_location)[18:]
+            assert isinstance(output_location, str)
+            filename = output_location.split('/')[-1]
+            download_url: str = f'https://order-pickup.s3.amazonaws.com/{filename}'
             local_file_path: Path = output_directory  / f'{tile_name}.csv'
             if download_csv(download_url, local_file_path):
                 print(f"[blue]Info:[/] CSV file for GRID_ID {tile_name} processing can start now.")
-            break
-        elif status.lower() == 'error':
+            return
+        elif status == 'error':
             print(f"[red]Error:[/] Failed in processing the order for GRID_ID {tile_name}.")
             break
-        else:
-            print(f"[blue]Info:[/] Order for GRID_ID {tile_name} is still processing. Waiting... (Attempt {retry_count + 1}/{max_retries})")
-            time.sleep(15)
-            retry_count += 1
+        
+        print(f"[blue]Info:[/] Order for GRID_ID {tile_name} is still processing. Waiting... (Attempt {retry_count + 1}/{max_retries})")
+        time.sleep(15)
+        retry_count += 1
 
     if retry_count == max_retries:
         print(f"[red]Error:[/] Order for GRID_ID {tile_name} did not complete after {max_retries} attempts.")
