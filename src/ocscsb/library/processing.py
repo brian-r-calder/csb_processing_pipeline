@@ -22,10 +22,10 @@ import duckdb
 
 matplotlib.use('Agg')
 from shapely.ops import unary_union
-from skimage.morphology import binary_dilation, binary_erosion
+from skimage.morphology.binary import binary_dilation, binary_erosion
 from scipy.interpolate import interp1d
 
-from fes_model import get_fes_tide, get_lat_separation
+from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
 
 
 # def setup_logging(output_dir):

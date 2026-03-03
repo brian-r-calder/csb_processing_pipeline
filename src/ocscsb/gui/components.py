@@ -1,7 +1,7 @@
 import os
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 from ocscsb.library.processing import Processor
 
@@ -83,11 +83,11 @@ class MainWindow:
         row_num = 0
 
         ttk.Checkbutton(options_frame, text="Insert into DuckDB (Required for all post-processing)",
-                        variable=duckdb_option_var).grid(row=row_num, column=0, columnspan=2, sticky='w', padx=5)
+                        variable=self.duckdb_option_var).grid(row=row_num, column=0, columnspan=2, sticky='w', padx=5)
         row_num += 1
 
         ttk.Checkbutton(options_frame, text="Export Initial Processed Geopackage (per input file)",
-                        variable=export_gp_var).grid(row=row_num, column=0, columnspan=2, sticky='w', padx=5)
+                        variable=self.export_gp_var).grid(row=row_num, column=0, columnspan=2, sticky='w', padx=5)
         row_num += 1
 
         ttk.Separator(options_frame, orient='horizontal').grid(row=row_num, columnspan=3, sticky='ew', pady=5)
@@ -115,17 +115,17 @@ class MainWindow:
         row_num += 1
 
         ttk.Label(options_frame, text='FES Model Data Path').grid(row=row_num, column=0, sticky='w', padx=25)
-        fes_path_entry = ttk.Entry(options_frame, textvariable=fes_path_var, width=45)
+        fes_path_entry = ttk.Entry(options_frame, textvariable=self.fes_path_var, width=45)
         fes_path_entry.grid(row=row_num, column=1, sticky='w')
-        fes_path_button = ttk.Button(options_frame, text='Browse', command=lambda: MainWindow.open_folder_dialog(fes_path_var))
+        fes_path_button = ttk.Button(options_frame, text='Browse', command=lambda: MainWindow.open_folder_dialog(self.fes_path_var))
         fes_path_button.grid(row=row_num, column=2, padx=5)
         row_num += 1
 
         ttk.Label(options_frame, text='FES Config YAML File').grid(row=row_num, column=0, sticky='w', padx=25)
-        fes_yaml_entry = ttk.Entry(options_frame, textvariable=fes_yaml_var, width=45)
+        fes_yaml_entry = ttk.Entry(options_frame, textvariable=self.fes_yaml_var, width=45)
         fes_yaml_entry.grid(row=row_num, column=1, sticky='w')
         fes_yaml_button = ttk.Button(options_frame, text='Browse',
-                                     command=lambda: MainWindow.open_file_dialog(fes_yaml_var, [("YAML file", "*.yml")]))
+                                     command=lambda: MainWindow.open_file_dialog(self.fes_yaml_var, [("YAML file", "*.yml")]))
         fes_yaml_button.grid(row=row_num, column=2, padx=5)
         row_num += 1
 
@@ -222,10 +222,10 @@ class MainWindow:
 
     @staticmethod
     def open_folder_dialog(var):
-        foldername = tk.filedialog.askdirectory()
+        foldername = filedialog.askdirectory()
         var.set(foldername)
 
     @staticmethod
     def open_file_dialog(var, file_types):
-        filename = tk.filedialog.askopenfilename(filetypes=file_types)
+        filename = filedialog.askopenfilename(filetypes=file_types)
         var.set(filename)

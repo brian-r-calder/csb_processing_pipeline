@@ -11,5 +11,6 @@ scikit-image~=0.26.0
 duckdb~=1.4.4
 seaborn~=0.13.2
 scikit-learn~=1.8.0
+xarray~=2026.2.0
 click~=8.3.1
 rich~=14.3.2
