@@ -29,6 +29,41 @@ C:\Pydro24\NOAA\site-packages\Python3\svn_repo\HSTB\CSB_processing\BETA_subordin
 - **GUI:** A user-friendly graphical interface built with Tkinter to manage all inputs and processing options.
 - **Cleanup:** Automatically removes temporary files after processing.
 
+## How to Install
+
+The code should be installed in a Python virtual environment, either directly or through conda.  However, there are dependencies that can only really be reliably installed through conda, making it the recommended solution.  To do this, change to the source directory and then:
+```shell
+conda create -n ocscsb python=3.13
+conda activate ocscsb
+conda install -c conda-forge gdal geopandas fiona shapely pyfes
+pip install .
+```
+
+The default installation generates four commands:
+
+1. `ocscsb`  This is a utility command with a number of sub-commands used primarily to manipulate the state of the system, and generally only useful by expert users.  The one exception to this is `ocscsb scrape` which is used to download CSV data from the NCEI DCDB point store for use in processing:
+```
+% ocscsb scrape --help
+Usage: ocscsb scrape [OPTIONS] INPUT_SHP OUTPUT_DIR EMAIL [START_DATE]
+
+  Search the DCDB archive API for CSB files from AWS.
+
+  This command queries the DCDB point-store API on AWS to find the CSV
+  versions of the contributed CSB files for a given tile of data, as specified
+  in the input Shapefile INPUT_SHP.  The CSVs retrieved are stored in
+  OUTPUT_DIR.  The EMAIL specified is used for the API ordering information,
+  and data is filtered to be after START_DATE (default: 1970-01-01).
+
+Options:
+  --help  Show this message and exit.
+  ```
+
+2. `processing`.  This launches a simple GUI that lets you specify the location of the various components of a processing run [as detailed below](#how-to-use).
+
+3. `leaderboard`.  This is a small utility that reads the processing state for a particular output directory and generates some summary statistics suitable for use with `dashboard`.
+
+4. `dasboard`.  A simple Dash-driven web interface to display the run statistics and histograms.
+
 ## How to Use
 
 1.  **Prepare Your Input Data:**
@@ -39,9 +74,11 @@ C:\Pydro24\NOAA\site-packages\Python3\svn_repo\HSTB\CSB_processing\BETA_subordin
     - **(Optional) Tessellation Shapefile:** A polygon shapefile to use for tiled processing.
 
 2.  **Launch the Application:**
-    Run the script from your terminal:
+
+    The `processing` command starts the GUI, from within the prepared environment:
     ```
-    python csb_processing.py
+    conda activate ocscsb
+    processing
     ```
 
 3.  **Configure the Processing Run via the GUI:**
