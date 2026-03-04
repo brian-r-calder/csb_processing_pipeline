@@ -1,12 +1,20 @@
-# fes_model.py
+import os
+from importlib import resources
+from pathlib import Path
+
 import numpy as np
 import pyfes
-import os
 import xarray as xr
 
-def get_fes_tide(lons, lats, times, fes_data_path, template_yaml_path):
+
+def get_fes_config_path() -> Path:
+    return Path(str(resources.files('ocscsb').joinpath(f"data/fes2022_config.yml")))
+
+
+def get_fes_tide(lons, lats, times, fes_data_path):
     """Calculates FES tides relative to MSL."""
     os.environ['DATASET_DIR'] = fes_data_path
+    template_yaml_path = get_fes_config_path()
     handlers = pyfes.load_config(template_yaml_path)
     lons_360 = np.mod(lons, 360)
     tide, lp, _ = pyfes.evaluate_tide(handlers['tide'], times, lons_360, lats)
