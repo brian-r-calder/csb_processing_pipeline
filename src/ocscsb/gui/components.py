@@ -229,3 +229,9 @@ class MainWindow:
     def open_file_dialog(var, file_types):
         filename = filedialog.askopenfilename(filetypes=file_types)
         var.set(filename)
+
+# Entrypoint for running in an IDE without having to install the entire package
+if __name__ == '__main__':
+    root = tk.Tk()
+    win = MainWindow(root)
+    tk.mainloop()
