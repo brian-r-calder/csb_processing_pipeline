@@ -22,8 +22,8 @@ class MainWindow:
         self.fp_zones_var = tk.StringVar()
         self.output_dir_var = tk.StringVar()
         self.tessellation_shp_var = tk.StringVar()
-        grid_resolution_var = tk.StringVar(value="10")
-        export_final_gpkg_var = tk.BooleanVar(value=True)
+        self.grid_resolution_var = tk.StringVar(value="10")
+        self.export_final_gpkg_var = tk.BooleanVar(value=True)
         self.fes_model_var = tk.BooleanVar(value=False)
         self.fes_path_var = tk.StringVar()
         self.fes_yaml_var = tk.StringVar()
@@ -35,7 +35,7 @@ class MainWindow:
         self.run_analysis_var = tk.BooleanVar(value=True)
         export_transits_var = tk.BooleanVar(value=False)
         self.run_final_grid_var = tk.BooleanVar(value=True)
-        organize_vrt_var = tk.BooleanVar(value=True)
+        self.organize_vrt_var = tk.BooleanVar(value=True)
 
         # --- Input Files Section ---
         input_frame = ttk.LabelFrame(main_frame, text="1. Input Files & Folders", padding="10")
@@ -51,7 +51,10 @@ class MainWindow:
         fp_zones_entry = ttk.Entry(input_frame, textvariable=self.fp_zones_var, width=60)
         fp_zones_entry.grid(row=1, column=1)
         ttk.Button(input_frame, text='Browse',
-                   command=lambda: MainWindow.open_file_dialog(self.fp_zones_var, [("Shapefile", "*.shp")])).grid(row=1, column=2,
+                   command=lambda: MainWindow.open_file_dialog(self.fp_zones_var, [
+                       ("Shapefile", "*.shp"),
+                       ("SQLite", "*.sqlite")
+                   ])).grid(row=1, column=2,
                                                                                                   padx=5)
 
         ttk.Label(input_frame, text='Output Directory').grid(row=2, column=0, sticky='w', padx=5, pady=2)
@@ -121,7 +124,7 @@ class MainWindow:
         fes_path_button.grid(row=row_num, column=2, padx=5)
         row_num += 1
 
-        ttk.Label(options_frame, text='FES Config YAML File').grid(row=row_num, column=0, sticky='w', padx=25)
+        ttk.Label(options_frame, text='FES Config YAML File [optional]').grid(row=row_num, column=0, sticky='w', padx=25)
         fes_yaml_entry = ttk.Entry(options_frame, textvariable=self.fes_yaml_var, width=45)
         fes_yaml_entry.grid(row=row_num, column=1, sticky='w')
         fes_yaml_button = ttk.Button(options_frame, text='Browse',
@@ -139,7 +142,7 @@ class MainWindow:
         row_num += 1
 
         gpkg_export_checkbox = ttk.Checkbutton(options_frame, text="Export Final Points GeoPackage (in epsg:4326)",
-                                               variable=export_final_gpkg_var)
+                                               variable=self.export_final_gpkg_var)
         gpkg_export_checkbox.grid(row=row_num, column=0, columnspan=2, sticky='w', padx=25)
         row_num += 1
 
@@ -148,17 +151,20 @@ class MainWindow:
         self.tess_entry = ttk.Entry(options_frame, textvariable=self.tessellation_shp_var, width=45)
         self.tess_entry.grid(row=row_num, column=1, sticky='w')
         self.tess_button = ttk.Button(options_frame, text='Browse',
-                                      command=lambda: MainWindow.open_file_dialog(self.tessellation_shp_var, [("Shapefile", "*.shp")]))
+                                      command=lambda: MainWindow.open_file_dialog(self.tessellation_shp_var,
+                                                                                  [
+                                                                                      ("Shapefile", "*.shp")
+                                                                                   ]))
         self.tess_button.grid(row=row_num, column=2, padx=5)
         row_num += 1
 
         ttk.Label(options_frame, text='Grid Resolution (meters)').grid(row=row_num, column=0, sticky='w', padx=25)
-        self.res_entry = ttk.Entry(options_frame, textvariable=grid_resolution_var, width=10)
+        self.res_entry = ttk.Entry(options_frame, textvariable=self.grid_resolution_var, width=10)
         self.res_entry.grid(row=row_num, column=1, sticky='w')
         row_num += 1
 
         self.organize_vrt_checkbox = ttk.Checkbutton(options_frame, text="Organize GeoTIFFs by EPSG and Create VRTs",
-                                                variable=organize_vrt_var)
+                                                variable=self.organize_vrt_var)
         self.organize_vrt_checkbox.grid(row=row_num, column=0, columnspan=2, sticky='w', padx=25)
         row_num += 1
         # --- Process Button ---
@@ -198,7 +204,11 @@ class MainWindow:
         run_analysis = self.run_analysis_var.get()
         run_final_grid = self.run_final_grid_var.get()
         export_gp = self.export_gp_var.get()
+        export_final_gpkg = self.export_final_gpkg_var.get()
+        tessellation_shp = self.tessellation_shp_var.get()
         insert_duckdb = self.duckdb_option_var.get()
+        grid_resolution = float(self.grid_resolution_var.get())
+        organize_vrt = self.organize_vrt_var.get()
         if not os.path.isdir(csb_directory):
             print("Selected path is not a directory.")
             return
@@ -215,7 +225,11 @@ class MainWindow:
             run_analysis=run_analysis,
             run_final_grid=run_final_grid,
             export_gp=export_gp,
-            insert_duckdb=insert_duckdb
+            insert_duckdb=insert_duckdb,
+            export_final_gpkg=export_final_gpkg,
+            tessellation_shp=tessellation_shp,
+            grid_resolution=grid_resolution,
+            organize_vrt=organize_vrt
         )
         processing_thread = threading.Thread(target=processor.run)
         processing_thread.start()

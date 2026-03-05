@@ -15,8 +15,9 @@ import pandas as pd
 import rasterio
 from osgeo import gdal
 from rasterio.features import shapes
+from rasterio.transform import from_origin
 from rasterio.warp import Resampling
-from shapely.geometry import shape
+from shapely.geometry import shape, Point
 from shapely.validation import make_valid
 import duckdb
 
@@ -55,6 +56,23 @@ from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
 #     print("--- Logging configured. Output will be saved to log file. ---")
 
 
+def get_utm_zone_wgs84(lat, lon):
+    """
+    Calculates the WGS84 UTM zone EPSG code for a given latitude and longitude.
+    This function correctly handles both Northern and Southern hemispheres.
+    """
+    zone_number = int((lon + 180) // 6) + 1
+
+    # Southern hemisphere EPSG codes are in the 327xx range
+    if lat < 0:
+        epsg_code = 32700 + zone_number
+    # Northern hemisphere EPSG codes are in the 326xx range
+    else:
+        epsg_code = 32600 + zone_number
+
+    return epsg_code
+
+
 class Processor:
     def __init__(self,
                  csb_directory: str,
@@ -70,7 +88,11 @@ class Processor:
                  run_analysis: bool = False,
                  run_final_grid: bool = False,
                  export_gp: bool = False,
-                 insert_duckdb: bool = False):
+                 insert_duckdb: bool = False,
+                 export_final_gpkg: bool = False,
+                 tessellation_shp: str|None = None,
+                 grid_resolution: float = 10.0,
+                 organize_vrt: bool = False):
         self.title = ''
         self.csb_directory = os.path.abspath(csb_directory)
         self.fp_zones = os.path.abspath(fp_zones)
@@ -85,6 +107,10 @@ class Processor:
         self.run_final_grid = run_final_grid
         self.export_gp = export_gp
         self.insert_duckdb = insert_duckdb
+        self.export_final_gpkg = export_final_gpkg
+        self.tessellation_shp = tessellation_shp
+        self.grid_resolution = grid_resolution
+        self.organize_vrt = organize_vrt
 
         # setup_logging(output_dir)
         print(f"output_dir is: {output_dir}")
@@ -242,49 +268,6 @@ class Processor:
             #print(f"Master offsets updated successfully in {MASTER_OFFSET_FILE}.")
         except Exception as e:
             print(f"Failed to update master offsets: {e}")
-
-    def fetch_tide_data(self,
-                        station_id, start_date, end_date, product, interval=None, attempt_great_lakes=False):
-        base_url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
-        params = {
-            "begin_date": start_date,
-            "end_date": end_date,
-            "station": station_id,
-            "datum": "MLLW" if not attempt_great_lakes else "LWD",
-            "time_zone": "gmt",
-            "units": "metric",
-            "format": "json",
-            "product": product
-        }
-
-        if interval:
-            params["interval"] = interval
-
-        request_url = requests.Request('GET', base_url, params=params).prepare().url
-        print(f"Requesting URL: {request_url}")
-
-        response = requests.get(base_url, params=params)
-        data = response.json()
-
-        if 'predictions' in data:
-            df = pd.json_normalize(data['predictions'])
-            data_type = "predicted data"
-        elif 'data' in data:
-            df = pd.json_normalize(data['data'])
-            data_type = "observed data"
-        else:
-            print(f"No data returned for URL: {request_url}")
-            return pd.DataFrame()
-
-        df['t'] = pd.to_datetime(df['t'])
-        # Convert 'v' to numeric, coercing errors to NaN
-        df['v'] = pd.to_numeric(df['v'], errors='coerce')
-        if df['v'].isna().any():
-            print("Warning: Some tide values could not be converted to numeric and will be dropped.")
-            df = df.dropna(subset=['v'])
-
-        print(f"Pulled {data_type} for station {station_id} from {start_date} to {end_date}")
-        return df
 
     def fetch_tide_data(self,
                         station_id, start_date, end_date, product, interval=None, attempt_great_lakes=False):
@@ -839,6 +822,296 @@ class Processor:
 
         return csb_corr1
 
+    # --- START: FINAL GRIDDING AND EXPORT FUNCTIONS ---
+    def points_to_raster_average(self, gdf, out_raster_path, value_col='depth', nodata=1000000):
+        """
+        Creates a GeoTIFF by averaging point values within each grid cell.
+        -- MODIFIED for ROBUSTNESS --
+        """
+        resolution = self.grid_resolution
+        if gdf.crs is None:
+            raise ValueError("GeoDataFrame has no CRS. Please set or reproject first.")
+
+        # --- Safety Check: Ensure the output directory exists before writing ---
+        output_dir = os.path.dirname(out_raster_path)
+        os.makedirs(output_dir, exist_ok=True)
+
+        x_min, y_min, x_max, y_max = gdf.total_bounds
+        width = int(np.ceil((x_max - x_min) / resolution))
+        height = int(np.ceil((y_max - y_min) / resolution))
+
+        if width <= 0 or height <= 0:
+            print(f"Warning: Raster dimensions are zero or negative for {os.path.basename(out_raster_path)}. Skipping.")
+            return
+
+        transform = from_origin(x_min, y_max, resolution, resolution)
+
+        sum_array = np.zeros((height, width), dtype=np.float64)  # Use float64 for sums to avoid overflow
+        count_array = np.zeros((height, width), dtype=np.int32)
+
+        for geom, value in zip(gdf.geometry, gdf[value_col]):
+            if geom is None or pd.isna(value):
+                continue
+            col = int((geom.x - x_min) // resolution)
+            row = int((y_max - geom.y) // resolution)
+            if 0 <= col < width and 0 <= row < height:
+                sum_array[row, col] += value
+                count_array[row, col] += 1
+
+        # method to calculate the average and avoid division by zero
+        # Create an output array filled with the nodata value by default
+        avg_array = np.full((height, width), nodata, dtype=np.float32)
+
+        # Create a boolean mask of cells where we have data (count > 0)
+        valid_mask = count_array > 0
+
+        # Perform the division ONLY on the valid cells and place the results in the output array
+        avg_array[valid_mask] = sum_array[valid_mask] / count_array[valid_mask]
+
+        with rasterio.open(
+                out_raster_path, 'w', driver='GTiff',
+                height=height, width=width, count=1,
+                dtype=np.float32, crs=gdf.crs.to_string(),
+                transform=transform, nodata=nodata,
+                compress='lzw'
+        ) as dst:
+            dst.write(avg_array, 1)
+
+        print(f"Final gridded GeoTIFF created at {out_raster_path}")
+
+    def organize_by_epsg(input_dir):
+        """
+        Moves TIFF files into subdirectories named by their EPSG code.
+        """
+        print("\nOrganizing final GeoTIFFs by EPSG code...")
+        for fn in os.listdir(input_dir):
+            if not fn.lower().endswith(('.tif', '.tiff')):
+                continue
+
+            src_path = os.path.join(input_dir, fn)
+            if not os.path.isfile(src_path): continue
+
+            try:
+                with rasterio.open(src_path) as src:
+                    epsg = src.crs.to_epsg()
+            except Exception as e:
+                print(f"[ERROR] could not open {fn}: {e}")
+                continue
+
+            if epsg is None:
+                print(f"[WARN] {fn} has no recognized EPSG code, skipping.")
+                continue
+
+            out_folder = os.path.join(input_dir, f"EPSG_{epsg}")
+            os.makedirs(out_folder, exist_ok=True)
+
+            dest_path = os.path.join(out_folder, fn)
+            shutil.move(src_path, dest_path)
+            print(f"Moved {fn} → {out_folder}")
+
+    def create_vrts_for_epsg_folders(self, base_dir):
+        """
+        Scans for 'EPSG_' subfolders and builds a VRT for the TIFFs in each.
+        """
+        print("\nBuilding VRTs for each EPSG folder...")
+        for folder_name in os.listdir(base_dir):
+            if folder_name.startswith("EPSG_") and os.path.isdir(os.path.join(base_dir, folder_name)):
+                directory = os.path.join(base_dir, folder_name)
+                pattern = os.path.join(directory, "*.tif")
+                files = glob.glob(pattern)
+
+                if not files:
+                    print(f"No GeoTIFFs found in {directory}, skipping VRT creation.")
+                    continue
+
+                print(f"Found {len(files)} files in {directory}. Building VRT...")
+                vrt_filename = os.path.join(directory, f"mosaic_{folder_name}.vrt")
+
+                gdal.BuildVRT(vrt_filename, files)
+                print("VRT created:", vrt_filename)
+
+                # Build overviews
+                print("Building overviews for VRT...")
+                ds = gdal.Open(vrt_filename)
+                if ds:
+                    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+                    ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+                    ds = None
+                    print(f"Overviews built for {vrt_filename}")
+
+    def run_final_gridding_and_export(self):
+        """
+        Main function for the final gridding and export stage.
+        """
+        print("\n***** Starting Final Gridding & Export Stage *****")
+        db_path = os.path.join(self.output_dir, "csb.duckdb")
+        output_folder = os.path.join(self.output_dir, "final_products")
+        os.makedirs(output_folder, exist_ok=True)
+        with duckdb.connect(database=db_path, read_only=False) as con:
+            if self.tessellation_shp is not None and os.path.exists(self.tessellation_shp):
+                print(f"Using tessellation scheme: {self.tessellation_shp}")
+                polygons_gdf = gpd.read_file(self.tessellation_shp)
+                if polygons_gdf.crs.to_epsg() != 4326:
+                    polygons_gdf = polygons_gdf.to_crs(epsg=4326)
+
+                for idx, poly_row in polygons_gdf.iterrows():
+                    poly_geom = poly_row.geometry
+                    polygon_id = str(poly_row.get('GRID_ID', idx))
+                    print(f"\n--- Processing Tile: {polygon_id} ---")
+
+                    minx, miny, maxx, maxy = poly_geom.bounds
+                    query = f"""
+                        SELECT lat, lon, "Outlier" AS outlier, depth_mod AS depth, unique_id,
+                        platform_name_x as platform_name, time, uncertainty_vert
+                        FROM csb
+                        WHERE (lat BETWEEN {miny} AND {maxy} AND lon BETWEEN {minx} AND {maxx})
+                        AND (Raster_Value IS NULL OR ABS(Raster_Value - depth_mod) <= (uncertainty_vert * 3.5))
+                    """
+                    df_points = con.execute(query).df()
+
+                    print(f"  Found {len(df_points)} points within the bounding box that passed the quality filter.")
+
+                    if df_points.empty:
+                        continue
+
+                    points_gdf_4326 = gpd.GeoDataFrame(
+                        df_points,
+                        geometry=[Point(xy) for xy in zip(df_points.lon, df_points.lat)],
+                        crs="EPSG:4326"
+                    )
+
+                    points_gdf_4326 = points_gdf_4326[points_gdf_4326.geometry.within(poly_geom)]
+
+                    print(f"  {len(points_gdf_4326)} points remain after precise clipping to the polygon.")
+
+                    if points_gdf_4326.empty:
+                        continue
+
+                    if self.export_final_gpkg:
+                        gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
+                        print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
+                        points_gdf_4326.to_file(gpkg_path, driver="GPKG")
+                        print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path}")
+
+                    lat_c, lon_c = poly_geom.centroid.y, poly_geom.centroid.x
+                    try:
+                        # --- UPDATED FUNCTION CALL in tiled workflow ---
+                        epsg_zone = get_utm_zone_wgs84(lat_c, lon_c)
+                        points_gdf_utm = points_gdf_4326.to_crs(epsg=epsg_zone)
+
+                        points_for_raster = points_gdf_utm[points_gdf_utm['outlier'] == False]
+
+                        print(f"  Found {len(points_for_raster)} non-outlier points to create raster from.")
+
+                        if not points_for_raster.empty:
+                            tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
+                            self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
+                    except ValueError as e:
+                        print(f"  Skipping raster for {polygon_id}: {e}")
+                        continue
+
+            else:  # This is the case for a single file output
+                print("No tessellation scheme provided. Processing all data into a single file.")
+                query = """
+                        SELECT lat, \
+                               lon, \
+                               "Outlier"       AS outlier, \
+                               depth_mod       AS depth, \
+                               unique_id,
+                               platform_name_x as platform_name, time, uncertainty_vert
+                        FROM csb
+                        WHERE
+                            Raster_Value IS NULL
+                           OR
+                            ABS(Raster_Value - depth_mod) <= (uncertainty_vert * 3.5) \
+                        """
+                df_points = con.execute(query).df()
+
+                print(f"Initial query returned {len(df_points)} points from the database.")
+
+                if df_points.empty:
+                    print("No points passed the quality filter. Aborting final gridding.")
+                    print("This can happen if all points intersected reference data but failed the quality check.")
+                    return
+
+                points_gdf_4326 = gpd.GeoDataFrame(
+                    df_points,
+                    geometry=[Point(xy) for xy in zip(df_points.lon, df_points.lat)],
+                    crs="EPSG:4326"
+                )
+
+                if self.export_final_gpkg:
+                    gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
+                    print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
+                    points_gdf_4326.to_file(gpkg_path, driver="GPKG")
+                    print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path}")
+
+                try:
+                    world_centroid = points_gdf_4326.unary_union.centroid
+                    # --- THIS IS THE UPDATED FUNCTION CALL ---
+                    epsg_code = get_utm_zone_wgs84(world_centroid.y, world_centroid.x)
+                    print(f"Determined overall EPSG zone for raster as: {epsg_code}")
+                    points_gdf_utm = points_gdf_4326.to_crs(epsg=epsg_code)
+
+                    points_for_raster = points_gdf_utm[points_gdf_utm['outlier'] == False]
+
+                    print(f"Found {len(points_for_raster)} non-outlier points to create raster from.")
+
+                    if not points_for_raster.empty:
+                        tif_path = os.path.join(output_folder, "csb_final_gridded.tif")
+                        self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
+                    else:
+                        print("No valid non-outlier points to create final raster.")
+
+                except ValueError as e:
+                    print(f"Could not process single file output: {e}")
+
+        if self.organize_vrt.get():
+            self.organize_by_epsg(output_folder)
+            self.create_vrts_for_epsg_folders(output_folder)
+
+        print("***** Final Gridding & Export Stage Complete *****")
+
+    def cleanup_interim_files(self):
+        """
+        Safely removes all temporary and intermediate files and folders created during processing.
+        """
+        print(f"\n--- Cleaning up interim files for {self.title} ---")
+
+        # List of folder paths to remove
+        folders_to_remove = [
+            os.path.join(self.output_dir, "Modeling")
+        ]
+
+        for folder in folders_to_remove:
+            try:
+                if os.path.exists(folder):
+                    shutil.rmtree(folder)
+                    print(f"Removed folder: {folder}")
+            except Exception as e:
+                print(f"Error removing folder {folder}: {e}")
+
+        # List of file patterns to remove
+        file_patterns_to_remove = [
+            os.path.join(self.output_dir, f"{self.title}_5m_MLLW.tif"),
+            os.path.join(self.output_dir, f"{self.title}_wgs84.tif"),
+            os.path.join(self.output_dir, f"{self.title}_intermediate.tif"),
+            os.path.join(self.output_dir, "convex_hull_polygon.*"),
+            os.path.join(self.output_dir, f"{self.title}_bathy_polygon.*")
+        ]
+
+        for pattern in file_patterns_to_remove:
+            files = glob.glob(pattern)
+            for f in files:
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                        print(f"Removed file: {f}")
+                except Exception as e:
+                    print(f"Error removing file {f}: {e}")
+
+    # --- END: FINAL GRIDDING AND EXPORT FUNCTIONS ---
+
     def run(self):
         start_time = time.time()
         # --- Load master offsets once at the start ---
@@ -886,7 +1159,7 @@ class Processor:
             except Exception as e:
                 print(f"An error occurred during initial processing of {csb_file}: {e}")
             finally:
-                self.cleanup_interim_files(self.output_dir, self.title)
+                self.cleanup_interim_files()
 
         if self.run_analysis:
             print("\n***** Starting Post-Processing Analysis *****")
