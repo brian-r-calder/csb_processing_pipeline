@@ -1,15 +1,19 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import sys
 import shutil
 import glob
 import time
 from typing import Callable
+import traceback as tb
+import gc
 
 import requests
 import geopandas as gpd
 import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
@@ -21,10 +25,15 @@ from shapely.geometry import shape, Point
 from shapely.validation import make_valid
 import duckdb
 
-matplotlib.use('Agg')
 from shapely.ops import unary_union
 from skimage.morphology.binary import binary_dilation, binary_erosion
 from scipy.interpolate import interp1d
+import seaborn as sns
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from scipy.ndimage import uniform_filter1d
 
 from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
 
@@ -72,6 +81,19 @@ def get_utm_zone_wgs84(lat, lon):
 
     return epsg_code
 
+def get_utm_zone_nad83(lat, lon):
+    """
+    Calculates the NAD83 UTM zone EPSG code for a given latitude and longitude.
+    """
+    zone_number = int((lon + 180) // 6) + 1
+    if lat < 0:
+        raise ValueError("NAD83 UTM zones are generally for northern hemisphere data only.")
+    return 26900 + zone_number
+
+
+class ProcessingException(Exception):
+    ...
+
 
 class Processor:
     def __init__(self,
@@ -86,6 +108,7 @@ class Processor:
                  fes_data_path: str|None = None,
                  fes_yaml_path: str|None = None,
                  run_analysis: bool = False,
+                 export_transits: bool = False,
                  run_final_grid: bool = False,
                  export_gp: bool = False,
                  insert_duckdb: bool = False,
@@ -104,6 +127,7 @@ class Processor:
         self.fes_data_path = fes_data_path
         self.fes_yaml_path = fes_yaml_path
         self.run_analysis = run_analysis
+        self.export_transits = export_transits
         self.run_final_grid = run_final_grid
         self.export_gp = export_gp
         self.insert_duckdb = insert_duckdb
@@ -155,7 +179,6 @@ class Processor:
         # Create a GeoDataFrame using lon/lat columns
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat), crs="EPSG:4326")
         return gdf
-
 
     def create_convex_hull_and_download_tiles(self,
                                               csb_data_path, output_dir,
@@ -400,7 +423,7 @@ class Processor:
         """
         print("***** Applying tides using global FES model (referenced to LAT) *****")
 
-        if not self.fes_data_path or not self.fes_yaml_path:
+        if self.fes_data_path is None:
             raise ValueError("FES Model requires both a data path and a YAML config file.")
 
         lons = gdf['lon'].to_numpy()
@@ -495,7 +518,6 @@ class Processor:
                                     known_great_lakes_stations.add(station_id)
                                 else:
                                     print(f"No water level data available for station {station_id}.")
-
             if tdf:
                 tdf = pd.concat(tdf)
                 print("Concatenated tdf shape:", tdf.shape)
@@ -768,6 +790,7 @@ class Processor:
                             con.execute(f"ALTER TABLE csb ADD COLUMN {col_name} {col_type};")
                 else:
                     # Table does not exist, create it with the full schema.
+                    print('TABLE csb does not exist, creating it...')
                     columns_for_create = ", ".join(
                         [f"{name} {dtype}" for name, dtype in master_columns_with_types.items()])
                     con.execute(f"CREATE TABLE csb ({columns_for_create})")
@@ -879,7 +902,7 @@ class Processor:
 
         print(f"Final gridded GeoTIFF created at {out_raster_path}")
 
-    def organize_by_epsg(input_dir):
+    def organize_by_epsg(self, input_dir):
         """
         Moves TIFF files into subdirectories named by their EPSG code.
         """
@@ -1066,7 +1089,7 @@ class Processor:
                 except ValueError as e:
                     print(f"Could not process single file output: {e}")
 
-        if self.organize_vrt.get():
+        if self.organize_vrt:
             self.organize_by_epsg(output_folder)
             self.create_vrts_for_epsg_folders(output_folder)
 
@@ -1111,6 +1134,378 @@ class Processor:
                     print(f"Error removing file {f}: {e}")
 
     # --- END: FINAL GRIDDING AND EXPORT FUNCTIONS ---
+
+    # --- START: POST-PROCESSING ANALYSIS FUNCTIONS ---
+
+    def run_histograms_calibration_points(self, db_path, hist_export_dir):
+        print("Starting Post-Processing Step 1: Histograms and Calibration Points")
+        os.makedirs(hist_export_dir, exist_ok=True)
+
+        with duckdb.connect(database=db_path, read_only=False) as con:
+            columns_query = "DESCRIBE csb"
+            columns_df = con.execute(columns_query).fetchdf()
+            if 'diff' in columns_df['column_name'].values:
+                print("Dropping incorrect 'diff' column in DuckDB...")
+                con.execute("ALTER TABLE csb DROP COLUMN diff")
+
+            columns_df = con.execute(columns_query).fetchdf()
+            if 'diff' not in columns_df['column_name'].values:
+                print("Creating 'diff' column in DuckDB with correct calculation...")
+                con.execute("ALTER TABLE csb ADD COLUMN diff DOUBLE DEFAULT NULL")
+                con.execute("UPDATE csb SET diff = (depth_new *-1 - Raster_Value)*-1 WHERE diff IS NULL")
+
+            unique_ids_query = "SELECT DISTINCT unique_id FROM csb"
+            unique_ids = con.execute(unique_ids_query).fetchdf()['unique_id']
+
+            for unique_id in unique_ids:
+                print(f'Calculating offset histogram for {unique_id}')
+                data_query = f"""
+                SELECT unique_id, platform_name_x, diff, lon, lat
+                FROM csb
+                WHERE unique_id = '{unique_id}' 
+                  AND diff > -12 AND diff < 12 
+                  AND Raster_Value > -20 
+                  AND Uncertainty_Value < 3
+                """
+                data_df = con.execute(data_query).fetchdf()
+
+                if not data_df.empty:
+                    platform_name = data_df['platform_name_x'].iloc[0]
+                    output_csv_path = os.path.join(hist_export_dir, f"{unique_id}_csb_offset_analysis.csv")
+                    data_df.to_csv(output_csv_path)
+
+                    plt.figure(figsize=(10, 6))
+                    sns.histplot(data_df['diff'], bins=30, kde=True, color="skyblue", label='Histogram')
+                    plt.axvline(data_df['diff'].mean(), color='green', linestyle='--',
+                                label=f'Mean: {data_df["diff"].mean():.2f}')
+                    plt.axvline(data_df['diff'].mean() - data_df['diff'].std(), color='purple', linestyle='--',
+                                label=f'-1 Std Dev: {(data_df["diff"].mean() - data_df["diff"].std()):.2f}')
+                    plt.axvline(data_df['diff'].mean() + data_df['diff'].std(), color='purple', linestyle='--',
+                                label=f'+1 Std Dev: {(data_df["diff"].mean() + data_df["diff"].std()):.2f}')
+                    plt.text(data_df['diff'].mean() - data_df['diff'].std(), plt.ylim()[1] * 0.95,
+                             f'-1 SD: {data_df["diff"].std():.2f}', horizontalalignment='right', color='purple')
+                    plt.text(data_df['diff'].mean() + data_df['diff'].std(), plt.ylim()[1] * 0.95,
+                             f'+1 SD: {data_df["diff"].std():.2f}', horizontalalignment='left', color='purple')
+                    plt.title(f'Distribution of Diff Values for {unique_id} ({platform_name})')
+                    plt.xlabel('Diff')
+                    plt.ylabel('Frequency')
+                    plt.legend()
+                    plt.savefig(os.path.join(hist_export_dir, f"{unique_id}_histogram.png"))
+                    plt.close()
+
+        print("Completed Step 1.")
+
+    def run_apply_best_offsets(self, db_path):
+        print("Starting Post-Processing Step 2: Apply Best Offsets")
+        with duckdb.connect(database=db_path, read_only=False) as con:
+            # Check if columns exist; if not, add them. This is safer for iterative runs.
+            columns_df = con.execute("DESCRIBE csb").fetchdf()
+            if 'depth_mod' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN depth_mod DOUBLE;")
+            if 'uncertainty_vert' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN uncertainty_vert DOUBLE;")
+            if 'uncertainty_hori' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN uncertainty_hori DOUBLE;")
+
+            print("Applying best offsets to new data...")
+            con.execute("""
+                        UPDATE csb
+                        SET depth_mod = (depth_new - sub.average_diff) * -1 FROM (
+                SELECT unique_id, AVG(diff) AS average_diff
+                FROM csb
+                WHERE diff > -12 AND diff < 12 AND Raster_Value > -20 AND Uncertainty_Value < 3
+                GROUP BY unique_id
+            ) AS sub
+                        WHERE csb.unique_id = sub.unique_id AND csb.depth_mod IS NULL;
+                        """)
+
+            # Fallback for points that couldn't be calibrated against reference data
+            update_query = """
+                           UPDATE csb
+                           SET depth_mod = depthfinal
+                           WHERE depth_mod IS NULL; \
+                           """
+            con.execute(update_query)
+            print("Updated remaining depth_mod values with initial depthfinal.")
+
+            # Calculate uncertainty only for new rows ---
+            print("Calculating CATZOC uncertainty for new data...")
+            uncert_vert_query = "UPDATE csb SET uncertainty_vert = (2 + (depth_mod * -0.05)) WHERE uncertainty_vert IS NULL"
+            uncert_hori_query = "UPDATE csb SET uncertainty_hori = 10 WHERE uncertainty_hori IS NULL"
+            con.execute(uncert_vert_query)
+            con.execute(uncert_hori_query)
+            print("Uncertainty values calculated.")
+
+        print("Completed Step 2.")
+
+    def run_export_transits(self, db_path, exports_folder):
+        print("Starting Post-Processing Step 3: Outlier Detection & Transit ID Assignment")
+
+        # --- Helper Functions ---
+        def haversine(lat1, lon1, lat2, lon2):
+            R = 6371000
+            phi1, phi2 = np.radians(lat1), np.radians(lat2)
+            dphi = np.radians(lat2 - lat1)
+            dlambda = np.radians(lon2 - lon1)
+            a = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2) ** 2
+            c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+            return R * c
+
+        def calculate_vessel_speed(group):
+            group = group.sort_values('time').copy()
+            group['lat'] = pd.to_numeric(group['lat'], errors='coerce')
+            group['lon'] = pd.to_numeric(group['lon'], errors='coerce')
+            group['time_diff'] = group['time'].diff().dt.total_seconds()
+            group['distance'] = haversine(
+                group['lat'].shift(), group['lon'].shift(),
+                group['lat'], group['lon']
+            )
+            group['vessel_speed'] = group['distance'] / group['time_diff']
+            group['vessel_speed'] = group['vessel_speed'].replace([np.inf, -np.inf], 0)
+            group['vessel_speed'] = group['vessel_speed'].fillna(0)
+            group['vessel_speed_smoothed'] = uniform_filter1d(group['vessel_speed'], size=5)
+            group['vessel_speed_smoothed'] = group['vessel_speed_smoothed'].replace([np.inf, -np.inf], 0)
+            return group
+
+        def detect_outliers(data, scaler, threshold_percentile, original_gdf, return_smoothed=False):
+            data_scaled = scaler.fit_transform(data)
+            imputer = IterativeImputer(
+                estimator=LinearRegression(),
+                max_iter=15,
+                random_state=42,
+                sample_posterior=False
+            )
+            data_imputed = imputer.fit_transform(data_scaled)
+            smoothed_depth = uniform_filter1d(data_imputed[:, 2], size=50)
+            residuals = np.abs(data_scaled[:, 2] - smoothed_depth)
+            threshold = np.percentile(residuals, threshold_percentile)
+            outliers = residuals > threshold
+            smoothed_depth_denorm = smoothed_depth * scaler.scale_[2] + scaler.mean_[2]
+            original_gdf.loc[data.index[outliers], 'Outlier'] = True
+            outlier_count = np.sum(outliers)
+            if return_smoothed:
+                full_smoothed_depth = pd.Series(index=original_gdf.index, dtype=float)
+                full_smoothed_depth[data.index] = smoothed_depth_denorm
+                return full_smoothed_depth, outlier_count
+            return data[~outliers], outlier_count
+
+        def create_geotiff(gdf, filename, resolution=8):
+            try:
+                bounds = gdf.total_bounds
+                x_min, y_min, x_max, y_max = bounds
+                if x_max == x_min or y_max == y_min:
+                    raise ValueError("Invalid geographic bounds. All points may be identical or too close.")
+                x_res = int((x_max - x_min) / resolution)
+                y_res = int((y_max - y_min) / resolution)
+                transform = from_origin(x_min, y_max, resolution, resolution)
+                out_meta = {
+                    'driver': 'GTiff',
+                    'height': y_res,
+                    'width': x_res,
+                    'count': 2,
+                    'dtype': 'float32',
+                    'crs': gdf.crs.to_string(),
+                    'transform': transform,
+                    'nodata': 1000000,
+                    'compress': 'lzw',
+                    'interleave': 'band'
+                }
+                with rasterio.open(filename, "w", **out_meta) as dest:
+                    for idx, col in enumerate(['depth', 'uncertainty'], start=1):
+                        array = np.full((y_res, x_res), out_meta['nodata'], dtype='float32')
+                        for point, value in zip(gdf.geometry, gdf[col]):
+                            col_idx = int((point.x - x_min) / resolution)
+                            row_idx = int((y_max - point.y) / resolution)
+                            if 0 <= col_idx < x_res and 0 <= row_idx < y_res:
+                                array[row_idx, col_idx] = value
+                        dest.write(array, idx)
+            except Exception as e:
+                print(f"Failed to create GeoTIFF for {filename}. Error: {str(e)}")
+
+        def create_transit_ids(df, max_hours_gap, max_days_duration):
+            df = df.sort_values(by='time')
+            current_transit_id = None
+            last_time = None
+            current_start_time = None
+            transit_ids = []
+            for index, row in df.iterrows():
+                if last_time is None or (row['time'] - last_time > timedelta(hours=max_hours_gap)) \
+                        or ((row['time'] - current_start_time) > timedelta(days=max_days_duration)):
+                    current_transit_id = f"{row['unique_id']}_{row['time'].strftime('%Y-%m-%d_%H-%M-%S')}"
+                    current_start_time = row['time']
+                transit_ids.append(current_transit_id)
+                last_time = row['time']
+            df['transit_id'] = transit_ids
+            return df
+
+        os.makedirs(exports_folder, exist_ok=True)
+        MAX_HOURS_GAP = 4
+        MAX_DAYS_DURATION = 7
+        with duckdb.connect(database=db_path, read_only=False) as con:
+            con.install_extension('spatial')
+            con.load_extension('spatial')
+
+            # Ensure columns exist
+            columns_df = con.execute("DESCRIBE csb").fetchdf()
+            if 'Outlier' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN Outlier BOOLEAN DEFAULT FALSE;")
+            if 'transit_id' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN transit_id VARCHAR;")
+            if 'vessel_speed_smoothed' not in columns_df['column_name'].values:
+                con.execute("ALTER TABLE csb ADD COLUMN vessel_speed_smoothed DOUBLE;")
+
+            # Get unique_ids ONLY from unprocessed data
+            unprocessed_ids_query = "SELECT DISTINCT unique_id FROM csb WHERE transit_id IS NULL"
+            unique_ids = con.execute(unprocessed_ids_query).fetchall()
+            unique_ids = [x[0] for x in unique_ids]
+
+            if not unique_ids:
+                print("No new data to process for outlier detection. Skipping.")
+                print("Completed Step 3.")
+                return
+
+            print(f"Found {len(unique_ids)} unique_id(s) with new data to process.")
+
+            for i, unique_id in enumerate(unique_ids, start=1):
+                print(f"\nProcessing new data for unique_id {i}/{len(unique_ids)}: {unique_id}")
+                # Query ONLY unprocessed data for the current vessel
+                query = f"""
+                SELECT
+                    rowid, unique_id, platform_name_x AS platform_name, time,
+                    depth_mod AS depth, uncertainty_vert AS uncertainty, uncertainty_hori,
+                    lat, lon, Raster_Value
+                FROM csb
+                WHERE unique_id = '{unique_id}'
+                  AND depth_mod IS NOT NULL
+                  AND transit_id IS NULL
+                ORDER BY time;
+                """
+                df = con.execute(query).df()
+                if df.empty:
+                    print(f"  No new data with depth_mod for {unique_id}, skipping.")
+                    continue
+
+                df['time'] = pd.to_datetime(df['time'], format='%Y%m%d %H:%M:%S')
+                df = create_transit_ids(df, MAX_HOURS_GAP, MAX_DAYS_DURATION)
+                for transit_id, group in df.groupby('transit_id'):
+                    print(f"  Processing transit: {transit_id}")
+                    group = group.sort_values('time').copy()
+                    group['lat'] = pd.to_numeric(group['lat'], errors='coerce')
+                    group['lon'] = pd.to_numeric(group['lon'], errors='coerce')
+                    group['Outlier'] = False
+                    group = calculate_vessel_speed(group)
+                    excess_speed_points = group[group['vessel_speed_smoothed'] > 10.3]
+                    print(f"    {len(excess_speed_points)} points exceed 20 knots (not filtered out).")
+                    data_for_outlier = group[['lat', 'lon', 'depth']].copy()
+                    scaler = StandardScaler()
+                    print("    First Pass (99th percentile):")
+                    filtered_data_1, outlier_count_1 = detect_outliers(data_for_outlier.copy(), scaler, 99,
+                                                                       original_gdf=group)
+                    print(f"    Outliers detected in Pass 1: {outlier_count_1}")
+                    print("    Second Pass (98th percentile):")
+                    filtered_data_2, outlier_count_2 = detect_outliers(filtered_data_1.copy(), scaler, 98,
+                                                                       original_gdf=group)
+                    print(f"    Outliers detected in Pass 2: {outlier_count_2}")
+                    print("    Third Pass (98th percentile, strict):")
+                    final_smoothed_depth, outlier_count_3 = detect_outliers(filtered_data_2.copy(), scaler, 98,
+                                                                            original_gdf=group, return_smoothed=True)
+                    print(f"    Outliers detected in Pass 3: {outlier_count_3}")
+                    group['Final_Smoothed_Depth'] = final_smoothed_depth
+
+                    plot_filename = os.path.join(exports_folder, f"{unique_id}_{transit_id}_outlier_plot.png")
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    mask_valid = group['Outlier'] == False
+                    mask_outlier = group['Outlier'] == True
+                    ax.scatter(group.index[mask_valid], group.loc[mask_valid, 'depth'],
+                               color='blue', s=1, label="Valid")
+                    ax.scatter(group.index[mask_outlier], group.loc[mask_outlier, 'depth'],
+                               color='red', s=10, label="Outlier")
+                    ax.set_title(f"Outlier Detection for Transit {transit_id} (unique_id: {unique_id})")
+                    ax.set_xlabel("Record Index")
+                    ax.set_ylabel("Depth")
+                    ax.legend()
+                    plt.savefig(plot_filename)
+                    plt.close()
+                    print(f"    Saved outlier plot to {plot_filename}")
+
+                    updates = []
+                    for idx, row in group.iterrows():
+                        updates.append((row['rowid'], row['transit_id'], str(row['Outlier']).upper()))
+                    if updates:
+                        updates_df = pd.DataFrame(updates, columns=['rowid', 'transit_id', 'outlier'])
+                        con.register('updates_df', updates_df)
+                        con.execute("""
+                                    UPDATE csb
+                                    SET transit_id = updates_df.transit_id,
+                                        Outlier    = CAST(updates_df.outlier AS BOOLEAN) FROM updates_df
+                                    WHERE csb.rowid = updates_df.rowid;
+                                    """)
+                        con.unregister('updates_df')
+                        print(f"    ...updating {len(updates)} rows for Outlier and transit_id.")
+                    del updates
+                    gc.collect()
+
+                    speed_updates = []
+                    for idx, row in group.iterrows():
+                        speed_updates.append((row['rowid'], row['vessel_speed_smoothed']))
+                    if speed_updates:
+                        speed_updates_df = pd.DataFrame(speed_updates, columns=['rowid', 'speed'])
+                        con.register('speed_updates_df', speed_updates_df)
+                        con.execute("""
+                                    UPDATE csb
+                                    SET vessel_speed_smoothed = speed_updates_df.speed FROM speed_updates_df
+                                    WHERE csb.rowid = speed_updates_df.rowid;
+                                    """)
+                        con.unregister('speed_updates_df')
+                        print(f"    ...updating {len(speed_updates)} rows for vessel_speed_smoothed.")
+                    del speed_updates
+                    gc.collect()
+
+                    # --- Transit export is optional ---
+                    if self.export_transits:
+                        gdf = gpd.GeoDataFrame(group, geometry=gpd.points_from_xy(group.lon, group.lat))
+                        gdf.set_crs(epsg=4326, inplace=True)
+                        if gdf.empty:
+                            print(f"No valid points left in transit {transit_id}. Skipping export.")
+                            continue
+
+                        non_outlier_gdf = gdf[gdf['Outlier'] == False]
+                        if non_outlier_gdf.empty:
+                            print(f"No non-outlier points left in transit {transit_id}. Skipping export.")
+                            continue
+
+                        avg_lat = non_outlier_gdf['lat'].mean()
+                        avg_lon = non_outlier_gdf['lon'].mean()
+                        try:
+                            epsg_zone = get_utm_zone_nad83(avg_lat, avg_lon)
+                        except ValueError as ve:
+                            print(f"Could not determine NAD83 UTM zone for lat={avg_lat}, lon={avg_lon}: {ve}")
+                            continue
+
+                        zone_folder = os.path.join(exports_folder, f"zone_{epsg_zone}")
+                        os.makedirs(zone_folder, exist_ok=True)
+                        non_outlier_gdf.to_crs(epsg=epsg_zone, inplace=True)
+
+                        start_date = group['time'].min().strftime('%Y%m%d%H%M%S')
+                        end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
+                        gpkg_filename = f"{unique_id}_{transit_id}_{start_date}_{end_date}.gpkg"
+                        gpkg_path = os.path.join(zone_folder, gpkg_filename)
+
+                        non_outlier_gdf.to_file(gpkg_path, driver='GPKG')
+                        print(f"Exported GeoPackage {gpkg_path}")
+
+                        tiff_filename = gpkg_filename.replace('.gpkg', '.tif')
+                        tiff_path = os.path.join(zone_folder, tiff_filename)
+                        create_geotiff(non_outlier_gdf, tiff_path)
+                        print(f"Exported GeoTIFF {tiff_path}")
+                        del gdf
+
+                    del group
+                    gc.collect()
+
+        print("Completed Step 3.")
+
+    # --- END: POST-PROCESSING ANALYSIS FUNCTIONS ---
 
     def run(self):
         start_time = time.time()
@@ -1157,7 +1552,8 @@ class Processor:
                 self.rasterize_csb(csb_file, bag_file, master_offsets_df)
 
             except Exception as e:
-                print(f"An error occurred during initial processing of {csb_file}: {e}")
+                tb.print_exception(e)
+                raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
             finally:
                 self.cleanup_interim_files()
 

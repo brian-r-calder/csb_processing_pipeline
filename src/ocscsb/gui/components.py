@@ -33,7 +33,7 @@ class MainWindow:
         self.duckdb_option_var = tk.BooleanVar(value=True)
         self.export_gp_var = tk.BooleanVar(value=False)
         self.run_analysis_var = tk.BooleanVar(value=True)
-        export_transits_var = tk.BooleanVar(value=False)
+        self.export_transits_var = tk.BooleanVar(value=False)
         self.run_final_grid_var = tk.BooleanVar(value=True)
         self.organize_vrt_var = tk.BooleanVar(value=True)
 
@@ -103,7 +103,7 @@ class MainWindow:
 
         self.export_transits_checkbox = ttk.Checkbutton(options_frame,
                                                    text="Export Individual Transit Files (GPKG & GeoTIFF)",
-                                                   variable=export_transits_var)
+                                                   variable=self.export_transits_var)
         self.export_transits_checkbox.grid(row=row_num, column=0, sticky='w', padx=25)
         row_num += 1
 
@@ -202,6 +202,7 @@ class MainWindow:
         fes_data_path = self.fes_path_var.get()
         fes_yaml_path = self.fes_yaml_var.get()
         run_analysis = self.run_analysis_var.get()
+        export_transits = self.export_transits_var.get()
         run_final_grid = self.run_final_grid_var.get()
         export_gp = self.export_gp_var.get()
         export_final_gpkg = self.export_final_gpkg_var.get()
@@ -223,6 +224,7 @@ class MainWindow:
             fes_data_path=fes_data_path,
             fes_yaml_path=fes_yaml_path,
             run_analysis=run_analysis,
+            export_transits=export_transits,
             run_final_grid=run_final_grid,
             export_gp=export_gp,
             insert_duckdb=insert_duckdb,
