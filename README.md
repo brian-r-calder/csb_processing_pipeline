@@ -142,3 +142,10 @@ Preferred method is to use the BlueTopo bathymetry as the reference bathy, which
 ```shell
 conda env create -f environment-dev.yml
 ```
+
+## Data
+
+### Convert NOAA tide polygons to SQLite format
+```shell
+ogr2ogr -of SQLite -lco 'LAUNDER=NO' tide_zone_polygons.sqlite  tide_zone_polygons.shp
+```

@@ -472,7 +472,7 @@ class Processor:
 
             zones = gpd.read_file(self.fp_zones)
             join = gpd.sjoin(gdf, zones, how='inner', predicate='within')
-            join = join.astype({'time': 'datetime64[ns]'})
+            join = join.astype({'time': 'datetime64[us]'})
             join = join.sort_values('time')
 
             def generate_date_ranges(dates):
@@ -760,7 +760,7 @@ class Processor:
 
         # This master list defines the complete, final schema.
         master_columns_with_types = {
-            "ControlStn": "VARCHAR", "Raster_Value": "DOUBLE", "Uncertainty_Value": "DOUBLE",
+            "controlstn": "VARCHAR", "Raster_Value": "DOUBLE", "Uncertainty_Value": "DOUBLE",
             "accuracy_score": "DOUBLE", "date_range": "VARCHAR", "depth_new": "DOUBLE",
             "depth_old": "DOUBLE", "depthfinal": "DOUBLE", "lat": "FLOAT", "lon": "FLOAT",
             "offset_value": "DOUBLE", "platform_name_x": "VARCHAR", "provider": "VARCHAR",
