@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -47,7 +48,7 @@ class MainWindow:
         ttk.Button(input_frame, text='Browse', command=lambda: MainWindow.open_folder_dialog(self.csb_var)).grid(row=0, column=2,
                                                                                                  padx=5)
 
-        ttk.Label(input_frame, text='Tide Zone Shapefile').grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        ttk.Label(input_frame, text='Tide Zone Shapefile [optional]').grid(row=1, column=0, sticky='w', padx=5, pady=2)
         fp_zones_entry = ttk.Entry(input_frame, textvariable=self.fp_zones_var, width=60)
         fp_zones_entry.grid(row=1, column=1)
         ttk.Button(input_frame, text='Browse',
@@ -215,10 +216,9 @@ class MainWindow:
             return
         processor: Processor = Processor(
             csb_directory,
-            fp_zones,
             bag_file_path,
             output_dir,
-            clean_up_callback=lambda: self.root.destroy(),
+            fp_zones=fp_zones,
             use_bluetopo=use_bluetopo,
             use_fes_model=use_fes_model,
             fes_data_path=fes_data_path,
@@ -233,8 +233,8 @@ class MainWindow:
             grid_resolution=grid_resolution,
             organize_vrt=organize_vrt
         )
-        processing_thread = threading.Thread(target=processor.run)
-        processing_thread.start()
+        self.processing_thread = threading.Thread(target=processor.run)
+        self.processing_thread.start()
 
     @staticmethod
     def open_folder_dialog(var):
@@ -251,3 +251,4 @@ if __name__ == '__main__':
     root = tk.Tk()
     win = MainWindow(root)
     tk.mainloop()
+    sys.exit(0)

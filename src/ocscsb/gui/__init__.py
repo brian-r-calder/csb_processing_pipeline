@@ -10,6 +10,7 @@ def cli() -> None:
     root = tk.Tk()
     win = MainWindow(root)
     tk.mainloop()
+    sys.exit(0)
 
 if getattr(sys, 'frozen', False):
     cli(sys.argv[1:])

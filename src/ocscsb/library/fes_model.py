@@ -11,7 +11,7 @@ def get_fes_config_path(*, fes_yaml_path: str|Path|None = None) -> Path:
     if fes_yaml_path is not None and fes_yaml_path != '':
         return Path(fes_yaml_path).absolute()
     else:
-        return Path(str(resources.files('ocscsb').joinpath(f"data/fes2022_config.yml"))).absolute()
+        return Path(str(resources.files('ocscsb').joinpath('data/fes2022_config.yml'))).absolute()
 
 
 def get_fes_tide(lons, lats, times, fes_data_path, fes_yaml_path):

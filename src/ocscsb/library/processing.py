@@ -5,6 +5,7 @@ import sys
 import shutil
 import glob
 import time
+from importlib import resources
 from typing import Callable
 import traceback as tb
 import gc
@@ -98,11 +99,11 @@ class ProcessingException(Exception):
 class Processor:
     def __init__(self,
                  csb_directory: str,
-                 fp_zones: str,
                  bag_file_path: str,
                  output_dir: str,
                  *,
                  clean_up_callback: Callable|None = None,
+                 fp_zones: str|None = None,
                  use_bluetopo: bool = True,
                  use_fes_model: bool = True,
                  fes_data_path: str|None = None,
@@ -118,10 +119,13 @@ class Processor:
                  organize_vrt: bool = False):
         self.title = ''
         self.csb_directory = os.path.abspath(csb_directory)
-        self.fp_zones = os.path.abspath(fp_zones)
         self.bag_file_path = os.path.abspath(bag_file_path)
         self.output_dir = os.path.abspath(output_dir)
         self.clean_up_callback = clean_up_callback
+        if fp_zones is None or fp_zones == '':
+            self.fp_zones = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
+        else:
+            self.fp_zones = os.path.abspath(fp_zones)
         self.use_bluetopo = use_bluetopo
         self.use_fes_model = use_fes_model
         self.fes_data_path = fes_data_path
