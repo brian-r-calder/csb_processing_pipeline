@@ -33,10 +33,8 @@ C:\Pydro24\NOAA\site-packages\Python3\svn_repo\HSTB\CSB_processing\BETA_subordin
 
 The code should be installed in a Python virtual environment, either directly or through conda.  However, there are dependencies that can only really be reliably installed through conda, making it the recommended solution.  To do this, change to the source directory and then:
 ```shell
-conda create -n ocscsb python=3.13
+conda env create -f environment.yml
 conda activate ocscsb
-conda install -c conda-forge gdal geopandas fiona shapely pyfes
-pip install .
 ```
 
 The default installation generates four commands:
@@ -139,3 +137,15 @@ There are other helper scripts, and some scripts for dashboard/leaderboard creat
 You're going to need a shapefile of the CO-OPS discrete zoned tide model. One is provided in the OCS Pydro distribution, along with the main CSB processing script. 
 
 Preferred method is to use the BlueTopo bathymetry as the reference bathy, which will be downloaded automatically based on the input raw data coverage, but it also allows the user to use a BAG instead (I think only SR BAGs are supported at this time, but VR BAGs will be supported soon). 
+
+## Development
+```shell
+conda env create -f environment-dev.yml
+```
+
+## Data
+
+### Convert NOAA tide polygons to SQLite format
+```shell
+ogr2ogr -of SQLite -lco 'LAUNDER=NO' tide_zone_polygons.sqlite  tide_zone_polygons.shp
+```

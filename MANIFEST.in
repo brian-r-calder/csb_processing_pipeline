@@ -1,0 +1,2 @@
+include src/ocscsb/data/fes2022_config.yml
+include src/ocscsb/data/tide_zone_polygons.sqlite
