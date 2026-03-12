@@ -216,7 +216,7 @@ class Processor:
             from nbs.bluetopo import fetch_tiles
             fetch_tiles(bluetopo_tiles_dir, convex_hull_shapefile, data_source='modeling')
 
-            # Use the CSV file's title (assumed to be stored in the global variable 'title')
+            # Use the CSV file's title
             bluetopo_tiles_copy = os.path.join(output_dir, f"BlueTopo_Tiles_{title}")
             if os.path.exists(bluetopo_tiles_copy):
                 shutil.rmtree(bluetopo_tiles_copy)
@@ -261,7 +261,6 @@ class Processor:
 
     def update_master_offsets(self,
                               unique_id, platform_name, new_offset, std_dev, date_range):
-        global MASTER_OFFSET_FILE
         MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
         master_offsets = self.read_master_offsets()
 
