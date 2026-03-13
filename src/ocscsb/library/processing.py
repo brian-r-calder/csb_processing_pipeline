@@ -37,7 +37,10 @@ from sklearn.preprocessing import StandardScaler
 from scipy.ndimage import uniform_filter1d
 
 from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
+from ocscsb.library import bluetopo
 
+GDAL_VSI_PREFIX: str = '/vsis3/'
+S3_PATH_SEP: str = '/'
 
 # def setup_logging(output_dir):
 #     """Configures logging to print to both console and a file."""
@@ -210,40 +213,20 @@ class Processor:
         if use_bluetopo:
             # Create the 'Modeling' folder for downloading tiles
             bluetopo_tiles_dir = os.path.join(output_dir, "Modeling")
+            print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir}...")
             os.makedirs(bluetopo_tiles_dir, exist_ok=True)
 
-            # Download BlueTopo tiles
-            from nbs.bluetopo import fetch_tiles
-            fetch_tiles(bluetopo_tiles_dir, convex_hull_shapefile, data_source='modeling')
-
-            # Use the CSV file's title
-            bluetopo_tiles_copy = os.path.join(output_dir, f"BlueTopo_Tiles_{title}")
-            if os.path.exists(bluetopo_tiles_copy):
-                shutil.rmtree(bluetopo_tiles_copy)
-            shutil.copytree(bluetopo_tiles_dir, bluetopo_tiles_copy)
-            print(f"Copied BlueTopo tiles to {bluetopo_tiles_copy}")
-
-            # Build a VRT from the copied tiles using a unique folder name that includes the title.
+            # Identify BlueTopo tiles that correspond to this convex hull
+            _, _, _, _, tiles = bluetopo.identify_tiles(bluetopo_tiles_dir, convex_hull_shapefile)
+            tile_files = []
+            for tile in tiles:
+                tile_files.append(f"{GDAL_VSI_PREFIX}{tile.bucket}{S3_PATH_SEP}{tile.object}")
+            # Build a VRT from tiles stored in S3, without needing to download them.
             vrt_dir = os.path.join(output_dir, f"BlueTopo_VRT_{title}")
             os.makedirs(vrt_dir, exist_ok=True)
-
-            # Create glob patterns to find both .tif and .tiff files in the unique tiles folder.
-            tif_pattern = os.path.join(bluetopo_tiles_copy, '**', '*.tif')
-            tiff_pattern = os.path.join(bluetopo_tiles_copy, '**', '*.tiff')
-            print(f"[DEBUG] Glob pattern for .tif: {tif_pattern}")
-            print(f"[DEBUG] Glob pattern for .tiff: {tiff_pattern}")
-            tile_files = glob.glob(tif_pattern, recursive=True) + glob.glob(tiff_pattern, recursive=True)
-            print("[DEBUG] Found the following tile files for VRT building:")
-            for f in tile_files:
-                print("  ", f)
-
-            if not tile_files:
-                raise RuntimeError("No BlueTopo GeoTIFF files were found in " + bluetopo_tiles_copy)
-
-            # Save the VRT file with the title appended to the file name.
             vrt_path = os.path.join(vrt_dir, f"merged_tiles_{title}.vrt")
-            vrt = gdal.BuildVRT(vrt_path, tile_files)
-            vrt = None  # Close the VRT dataset
+            with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
+                gdal.BuildVRT(vrt_path, tile_files)
             print(f"Created VRT at {vrt_path}")
             return vrt_path
         else:
@@ -589,10 +572,17 @@ class Processor:
             input_for_warp = temp_vrt_path
 
         # BIGTIFF=YES' to creationOptions to allow files larger than 4GB
-        gdal.Warp(output_raster_wgs84, input_for_warp,
-                  dstSRS='EPSG:4326',
-                  creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
-                  dstNodata=1000000)
+        if self.use_bluetopo:
+            with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
+                gdal.Warp(output_raster_wgs84, input_for_warp,
+                          dstSRS='EPSG:4326',
+                          creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
+                          dstNodata=1000000)
+        else:
+            gdal.Warp(output_raster_wgs84, input_for_warp,
+                      dstSRS='EPSG:4326',
+                      creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
+                      dstNodata=1000000)
 
         # Clean up the temporary VRT file if it was created
         if os.path.exists(temp_vrt_path):
@@ -1544,10 +1534,10 @@ class Processor:
 
                 if self.use_bluetopo:
                     bag_file = self.create_convex_hull_and_download_tiles(csb_file,
-                                                                              self.output_dir,
-                                                                              self.title,
-                                                                              self.bag_file_path,
-                                                                              use_bluetopo=True)
+                                                                          self.output_dir,
+                                                                          self.title,
+                                                                          self.bag_file_path,
+                                                                          use_bluetopo=True)
                 else:
                     bag_file = self.bag_file_path
 
