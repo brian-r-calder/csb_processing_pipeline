@@ -7,6 +7,7 @@ import geopandas as gpd
 import duckdb
 
 from ocscsb import __version__ as version
+from ocscsb.library import io
 from ocscsb.library.dcdb import ensure_grid_id_exists, csv_file_exists, process_tile
 from ocscsb.library.database import (
     enable_spatial,
@@ -35,6 +36,8 @@ from ocscsb.library.geotiff import (
     sample_grid,
     diff_grid_to_geotiff
 )
+from ocscsb.library.io import IOManagerFile
+
 
 @click.version_option(version=version)
 @click.group()
@@ -54,6 +57,8 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
     are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
     filtered to be after START_DATE (default: 1970-01-01).
     '''
+    io_mgr: io.IOManager = IOManagerFile(str(output_dir))
+
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 
     # Ensure GRID_ID exists and is populated
@@ -65,7 +70,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
         tile_name = row['GRID_ID']
         
         # Check if the CSV file for the current tile already exists
-        if csv_file_exists(tile_name, output_dir):
+        if csv_file_exists(io_mgr, tile_name, str(output_dir)):
             print(f"[orange]Warning:[/] CSV file for GRID_ID {tile_name} already exists. Skipping download.")
             continue
         

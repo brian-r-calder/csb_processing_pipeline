@@ -1,8 +1,14 @@
 import time
 from pathlib import Path
+
 import geopandas as gpd
+
 import requests
+
 from rich import print
+
+from ocscsb.library.io import IOManager
+
 
 def ensure_grid_id_exists(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if 'GRID_ID' not in gdf.columns:
@@ -117,7 +123,9 @@ def process_tile(bbox: str, email: str, start_date: str, tile_name: str, output_
         print(f"[red]Error:[/] Order for GRID_ID {tile_name} did not complete after {max_retries} attempts.")
 
 # Check if the CSV file already exists (this prevents tiles to be downloaded again if the program crashed halfway through)
-def csv_file_exists(tile_name: str, output_directory: Path) -> bool:
+def csv_file_exists(io_mgr: IOManager, tile_name: str, output_location: str,
+                    *,
+
+                    ttl_hours: int = 72) -> bool:
     # Construct the path where the CSV file would be saved
-    csv_file_path = output_directory / f"{tile_name}.csv"
-    return csv_file_path.exists()
+    return io_mgr.object_exists(f"{tile_name}.csv")

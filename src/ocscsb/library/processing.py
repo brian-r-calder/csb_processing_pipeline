@@ -211,7 +211,7 @@ class Processor:
         print(f"Convex hull shapefile written to: {convex_hull_shapefile}")
 
         if use_bluetopo:
-            # Create the 'Modeling' folder for downloading tiles
+            # Create the 'Modeling' folder for storing the VRT referencing GeoTIFFs in S3
             bluetopo_tiles_dir = os.path.join(output_dir, "Modeling")
             print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir}...")
             os.makedirs(bluetopo_tiles_dir, exist_ok=True)
@@ -824,7 +824,7 @@ class Processor:
     def rasterize_csb(self, csb_file, bag_file, master_offsets_df):
         csb_corr1 = self.draft_corr(csb_file, bag_file, master_offsets_df)
 
-        # Based on GUI options, insert processed data into DuckDB.
+        # Insert processed data into DuckDB.
         if self.insert_duckdb:
             duckdb_path = os.path.join(self.output_dir, "csb.duckdb")
             self.insert_into_duckdb(csb_corr1, duckdb_path)

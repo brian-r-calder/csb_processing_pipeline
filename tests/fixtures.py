@@ -1,5 +1,8 @@
 import re
 import subprocess
+from pathlib import Path
+import tempfile
+import shutil
 
 import requests
 
@@ -82,7 +85,7 @@ def garage_credentials(docker_ip, docker_services, docker_compose_file, garage_l
     secret_key_match = re.search(r"Secret key:\s+(\S+)", res.stdout)
     if not access_key_match or not secret_key_match:
         raise RuntimeError(
-            f"Failed to extract Garage credentials. CLI Output: {result.stdout}\nErrors: {result.stderr}")
+            f"Failed to extract Garage credentials. CLI Output: {res.stdout}\nErrors: {res.stderr}")
 
     # 2. Grant bucket creation permissions
     res = subprocess.run([*dc_cmd, "/garage", "key", "allow", "--create-bucket", "csb-key"],
@@ -111,3 +114,10 @@ def s3_client(garage_credentials):
     client.create_bucket(Bucket=bucket_name)
 
     yield client
+
+
+@pytest.fixture(scope="function")
+def temp_path():
+    tmp_dir = Path(tempfile.mkdtemp())
+    yield tmp_dir
+    shutil.rmtree(tmp_dir)
