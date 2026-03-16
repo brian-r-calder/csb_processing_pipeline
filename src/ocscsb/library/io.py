@@ -2,6 +2,7 @@ from abc import ABC
 from pathlib import Path
 import datetime
 import time
+from contextlib import contextmanager
 
 import boto3
 import botocore.exceptions
@@ -34,6 +35,25 @@ class IOManager(ABC):
         """
         ...
 
+    @contextmanager
+    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        """
+        Open `object_name` for reading for writing.
+        Parameters
+        ----------
+        object_name
+        mode
+        buffering
+        encoding
+        errors
+        newline
+
+        Returns
+        -------
+        A file-like object that can be read from or written to.
+        """
+        ...
+
 class IOManagerFile(IOManager):
     def __init__(self, location: str):
         super().__init__(location)
@@ -53,6 +73,10 @@ class IOManagerFile(IOManager):
         curr_time = time.time()
         stat = object_path.stat()
         return stat.st_mtime > (curr_time - ttl_sec)
+
+    @contextmanager
+    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        raise NotImplementedError()
 
 class IOManagerS3(IOManager):
     def __init__(self, location: str, client: boto3.client):
@@ -80,3 +104,7 @@ class IOManagerS3(IOManager):
             if 'An error occurred (404)' in str(e):
                 return False
             raise e
+
+    @contextmanager
+    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        raise NotImplementedError()
