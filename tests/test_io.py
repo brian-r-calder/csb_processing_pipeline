@@ -11,6 +11,7 @@ from smart_open import open as sopen
 from ocscsb.library import io
 
 DUMMY_FILE_NAME: str = 'dummy.txt'
+NEW_FILE_NAME: str = 'new.txt'
 HELLO_WORLD: str = 'Hello, World!'
 HELLO_WORLD_BYTES: bytes = b'Hello, World!'
 
@@ -32,16 +33,22 @@ def dummy_s3_object(s3_client):
         fout.write(HELLO_WORLD_BYTES)
 
 
-def test_io_manager_file_object_exists(temp_path, dummy_file):
-    dummy_file: io.File = io.File(str(temp_path), DUMMY_FILE_NAME, io.FileProviderType.LOCAL_FILE)
+def test_local_file_object_exists(temp_path, dummy_file):
+    dummy_file: io.File = io.File(temp_path, DUMMY_FILE_NAME, io.FileProviderType.LOCAL_FILE)
     assert not dummy_file.exists()
     assert dummy_file.exists(ttl_sec=8 * 86_400)
     with dummy_file.open() as f:
         line = f.readline()
-        assert line == HELLO_WORLD
+        assert HELLO_WORLD == line
 
+def test_local_file_write(temp_path):
+    new_file: io.File = io.File(temp_path, NEW_FILE_NAME, io.FileProviderType.LOCAL_FILE)
+    with new_file.open(mode='w') as f_out:
+        f_out.writelines(HELLO_WORLD)
+    with new_file.open() as f_in:
+        assert HELLO_WORLD == f_in.readline()
 
-def test_io_manager_s3_object_exists(dummy_s3_object, s3_client):
+def test_s3_object_exists(dummy_s3_object, s3_client):
     # Sleep for 1 second so that our TTL 1 second case passes as expected.
     time.sleep(1)
     dummy_file: io.File = io.File(s3_client['bucket'], DUMMY_FILE_NAME, io.FileProviderType.S3,
@@ -50,4 +57,12 @@ def test_io_manager_s3_object_exists(dummy_s3_object, s3_client):
     assert not dummy_file.exists(ttl_sec=1)
     with dummy_file.open() as f:
         line = f.readline()
-        assert line == HELLO_WORLD
+        assert HELLO_WORLD == line
+
+def test_s3_write(s3_client):
+    new_file: io.File = io.File(s3_client['bucket'], NEW_FILE_NAME, io.FileProviderType.S3,
+                                client=s3_client['client'])
+    with new_file.open(mode='w') as f_out:
+        f_out.writelines(HELLO_WORLD)
+    with new_file.open() as f_in:
+        assert HELLO_WORLD == f_in.readline()

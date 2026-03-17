@@ -136,14 +136,15 @@ class FileProviderType(Enum):
 
 
 class File:
-    def __init__(self, location: str, object_name: str, provider: FileProviderType,
+    def __init__(self, location: str | Path, object_name: str, provider: FileProviderType,
                  **kwargs):
+        self.location = str(location)
         self.object_name = object_name
         match provider:
             case FileProviderType.LOCAL_FILE:
-                self.io_mgr: IOManager = IOManagerFile(location)
+                self.io_mgr: IOManager = IOManagerFile(self.location)
             case FileProviderType.S3:
-                self.io_mgr: IOManager = IOManagerS3(location,
+                self.io_mgr: IOManager = IOManagerS3(self.location,
                                                      client=kwargs.get('client', None))
             case _:
                 raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
