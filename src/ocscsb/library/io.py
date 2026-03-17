@@ -3,6 +3,9 @@ from pathlib import Path
 import datetime
 import time
 from contextlib import contextmanager
+from typing import IO, AnyStr, Any, Generator
+
+from smart_open import open as sopen
 
 import boto3
 import botocore.exceptions
@@ -13,6 +16,11 @@ DEFAULT_TTL_SEC = 259_200
 class IOManager(ABC):
     def __init__(self, location: str):
         self.location = location
+
+    def generate_resource_uri(self, object_name: str,
+                              *,
+                              sub_path: str | None = None) -> str | Path:
+        ...
 
     def object_exists(self, object_name: str,
                       *,
@@ -52,21 +60,32 @@ class IOManager(ABC):
         -------
         A file-like object that can be read from or written to.
         """
-        ...
+        f = sopen(self.generate_resource_uri(object_name),
+                  mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
+        try:
+            yield f
+        finally:
+            f.close()
+
 
 class IOManagerFile(IOManager):
     def __init__(self, location: str):
         super().__init__(location)
         self.location_path: Path = Path(self.location).absolute()
 
+    def generate_resource_uri(self, object_name: str,
+                              *,
+                              sub_path: str | None = None) -> str | Path:
+        object_parent = self.location_path
+        if sub_path is not None:
+            object_parent = object_parent / sub_path
+        return object_parent / object_name
+
     def object_exists(self, object_name: str,
                       *,
                       ttl_sec: int = DEFAULT_TTL_SEC,
                       sub_path: str | None = None) -> bool:
-        object_parent = self.location_path
-        if sub_path is not None:
-            object_parent = object_parent / sub_path
-        object_path: Path = object_parent / object_name
+        object_path: Path = self.generate_resource_uri(object_name, sub_path=sub_path)
         if not object_path.exists():
             return False
         # File exists, check its modification time to see if it is older than TTL
@@ -74,14 +93,19 @@ class IOManagerFile(IOManager):
         stat = object_path.stat()
         return stat.st_mtime > (curr_time - ttl_sec)
 
-    @contextmanager
-    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        raise NotImplementedError()
 
 class IOManagerS3(IOManager):
     def __init__(self, location: str, client: boto3.client):
         super().__init__(location)
         self._client = client
+
+    def generate_resource_uri(self, object_name: str,
+                              *,
+                              sub_path: str | None = None) -> str | Path:
+        if sub_path is not None:
+            return f"s3://{self.location}/{sub_path}/{object_name}"
+        else:
+            return f"s3://{self.location}/{object_name}"
 
     def object_exists(self, object_name: str,
                       *,
@@ -107,4 +131,10 @@ class IOManagerS3(IOManager):
 
     @contextmanager
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        raise NotImplementedError()
+        f = sopen(self.generate_resource_uri(object_name),
+                  mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
+                  transport_params={'client': self._client})
+        try:
+            yield f
+        finally:
+            f.close()

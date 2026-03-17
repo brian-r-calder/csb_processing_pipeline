@@ -10,13 +10,16 @@ from smart_open import open as sopen
 
 from ocscsb.library import io
 
+HELLO_WORLD: str = 'Hello, World!'
+HELLO_WORLD_BYTES: bytes = b'Hello, World!'
+
 
 @pytest.fixture(scope='function')
 def dummy_file(temp_path):
     df: Path = temp_path / 'dummy.txt'
-    df.touch()
+    df.write_text(HELLO_WORLD)
     curr_time = time.time()
-    # Create new file times 7 days in the past
+    # Set access and mod time times 7 days in the past
     new_ftime = curr_time - (7 * 86_400)
     os.utime(df, times=(new_ftime, new_ftime))
     yield df
@@ -25,13 +28,16 @@ def dummy_file(temp_path):
 def dummy_s3_object(s3_client):
     with sopen('s3://csb-dest/dummy.txt', 'wb',
                transport_params={'client': s3_client}) as fout:
-        fout.write(b'hello world!')
+        fout.write(HELLO_WORLD_BYTES)
 
 
 def test_io_manager_file_object_exists(temp_path, dummy_file):
     io_mgr: io.IOManager = io.IOManagerFile(str(temp_path))
     assert not io_mgr.object_exists('dummy.txt')
     assert io_mgr.object_exists('dummy.txt', ttl_sec=8 * 86_400)
+    with io_mgr.open('dummy.txt') as f:
+        line = f.readline()
+        assert line == HELLO_WORLD
 
 
 def test_io_manager_s3_object_exists(dummy_s3_object, s3_client):
@@ -41,3 +47,6 @@ def test_io_manager_s3_object_exists(dummy_s3_object, s3_client):
     assert io_mgr.object_exists('dummy.txt')
     assert not io_mgr.object_exists('dummy.txt', ttl_sec=1)
     assert not io_mgr.object_exists('doesnotexist.txt')
+    with io_mgr.open('dummy.txt') as f:
+        line = f.readline()
+        assert line == HELLO_WORLD
