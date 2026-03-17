@@ -151,7 +151,7 @@ class File:
                 io_mgr: IOManager = IOManagerS3(location_str,
                                                 client=kwargs.get('client', None))
             case _:
-                raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
+                raise ValueError(f"Unable to create IO manager for unknown storage provider type {provider.name}")
         return cls(location_str, object_name, io_mgr)
 
     def exists(self, *,
@@ -182,7 +182,7 @@ class StorageLocation:
                 self.io_mgr: IOManager = IOManagerS3(self.location,
                                                      client=kwargs.get('client', None))
             case _:
-                raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
+                raise ValueError(f"Unable to create IO manager for unknown storage provider type {provider.name}")
 
     def new_file(self, object_name: str) -> File:
         return File(self.location, object_name, self.io_mgr)
