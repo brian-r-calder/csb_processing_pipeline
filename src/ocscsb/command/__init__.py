@@ -36,7 +36,6 @@ from ocscsb.library.geotiff import (
     sample_grid,
     diff_grid_to_geotiff
 )
-from ocscsb.library.io import IOManagerFile
 
 
 @click.version_option(version=version)

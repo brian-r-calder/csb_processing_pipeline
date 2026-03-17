@@ -208,5 +208,8 @@ __marimo__/
 
 .vscode/settings.json
 
+# Local data
+data/
+
 # Test artifacts
 tests/keys
