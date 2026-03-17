@@ -117,7 +117,6 @@ class IOManagerS3(IOManager):
             mtime = response['LastModified']
             curr_time = datetime.datetime.now(mtime.tzinfo)
             dt = datetime.timedelta(seconds=ttl_sec)
-            print(response)
             return mtime > (curr_time - dt)
         except botocore.exceptions.ClientError as e:
             if 'An error occurred (404)' in str(e):

@@ -5,8 +5,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./garage.toml:/etc/garage.toml
-#      - garage_data:/var/lib/garage/data
-#      - garage_meta:/var/lib/garage/meta
     ports:
       - "3900:3900"
       - "3901:3901"
