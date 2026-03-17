@@ -113,7 +113,7 @@ def s3_client(garage_credentials):
     bucket_name = "csb-dest"
     client.create_bucket(Bucket=bucket_name)
 
-    yield client
+    yield {'client': client, 'bucket': bucket_name}
 
 
 @pytest.fixture(scope="function")

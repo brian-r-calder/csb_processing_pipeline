@@ -3,7 +3,7 @@ from pathlib import Path
 import datetime
 import time
 from contextlib import contextmanager
-from typing import IO, AnyStr, Any, Generator
+from enum import Enum
 
 from smart_open import open as sopen
 
@@ -43,7 +43,6 @@ class IOManager(ABC):
         """
         ...
 
-    @contextmanager
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
         """
         Open `object_name` for reading for writing.
@@ -60,12 +59,8 @@ class IOManager(ABC):
         -------
         A file-like object that can be read from or written to.
         """
-        f = sopen(self.generate_resource_uri(object_name),
-                  mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
-        try:
-            yield f
-        finally:
-            f.close()
+        return sopen(self.generate_resource_uri(object_name),
+                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
 
 
 class IOManagerFile(IOManager):
@@ -129,11 +124,38 @@ class IOManagerS3(IOManager):
                 return False
             raise e
 
-    @contextmanager
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        f = sopen(self.generate_resource_uri(object_name),
-                  mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
-                  transport_params={'client': self._client})
+        return sopen(self.generate_resource_uri(object_name),
+                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
+                     transport_params={'client': self._client})
+
+
+class FileProviderType(Enum):
+    LOCAL_FILE = 1
+    S3 = 2
+
+
+class File:
+    def __init__(self, location: str, object_name: str, provider: FileProviderType,
+                 **kwargs):
+        self.object_name = object_name
+        match provider:
+            case FileProviderType.LOCAL_FILE:
+                self.io_mgr: IOManager = IOManagerFile(location)
+            case FileProviderType.S3:
+                self.io_mgr: IOManager = IOManagerS3(location,
+                                                     client=kwargs.get('client', None))
+            case _:
+                raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
+
+    def exists(self, *,
+               ttl_sec: int = DEFAULT_TTL_SEC):
+        return self.io_mgr.object_exists(self.object_name, ttl_sec=ttl_sec)
+
+    @contextmanager
+    def open(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        f = self.io_mgr.open(self.object_name,
+                             mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
         try:
             yield f
         finally:
