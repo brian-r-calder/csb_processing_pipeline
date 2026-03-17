@@ -130,24 +130,29 @@ class IOManagerS3(IOManager):
                      transport_params={'client': self._client})
 
 
-class FileProviderType(Enum):
+class StorageProviderType(Enum):
     LOCAL_FILE = 1
     S3 = 2
 
-
 class File:
-    def __init__(self, location: str | Path, object_name: str, provider: FileProviderType,
-                 **kwargs):
-        self.location = str(location)
+    def __init__(self, location: str, object_name: str, io_mgr: IOManager):
+        self.location = location
         self.object_name = object_name
+        self.io_mgr = io_mgr
+
+    @classmethod
+    def init(cls, location: str | Path, object_name: str, provider: StorageProviderType,
+             **kwargs):
+        location_str: str = str(location)
         match provider:
-            case FileProviderType.LOCAL_FILE:
-                self.io_mgr: IOManager = IOManagerFile(self.location)
-            case FileProviderType.S3:
-                self.io_mgr: IOManager = IOManagerS3(self.location,
-                                                     client=kwargs.get('client', None))
+            case StorageProviderType.LOCAL_FILE:
+                io_mgr: IOManager = IOManagerFile(location_str)
+            case StorageProviderType.S3:
+                io_mgr: IOManager = IOManagerS3(location_str,
+                                                client=kwargs.get('client', None))
             case _:
                 raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
+        return cls(location_str, object_name, io_mgr)
 
     def exists(self, *,
                ttl_sec: int = DEFAULT_TTL_SEC):
@@ -161,3 +166,29 @@ class File:
             yield f
         finally:
             f.close()
+
+    def get_uri(self) -> str:
+        return self.io_mgr.generate_resource_uri(self.object_name)
+
+
+class StorageLocation:
+    def __init__(self, location: str | Path, provider: StorageProviderType,
+                 **kwargs):
+        self.location = str(location)
+        match provider:
+            case StorageProviderType.LOCAL_FILE:
+                self.io_mgr: IOManager = IOManagerFile(self.location)
+            case StorageProviderType.S3:
+                self.io_mgr: IOManager = IOManagerS3(self.location,
+                                                     client=kwargs.get('client', None))
+            case _:
+                raise ValueError(f"Unable to create IO manager for unknown file provider type {provider.name}")
+
+    def new_file(self, object_name: str) -> File:
+        return File(self.location, object_name, self.io_mgr)
+
+    def contains(self, object_name: str,
+                 *,
+                 ttl_sec: int = DEFAULT_TTL_SEC,
+                 sub_path: str | None = None) -> bool:
+        return self.io_mgr.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)

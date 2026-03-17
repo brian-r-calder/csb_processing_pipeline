@@ -34,7 +34,7 @@ def dummy_s3_object(s3_client):
 
 
 def test_local_file_object_exists(temp_path, dummy_file):
-    dummy_file: io.File = io.File(temp_path, DUMMY_FILE_NAME, io.FileProviderType.LOCAL_FILE)
+    dummy_file: io.File = io.File.init(temp_path, DUMMY_FILE_NAME, io.StorageProviderType.LOCAL_FILE)
     assert not dummy_file.exists()
     assert dummy_file.exists(ttl_sec=8 * 86_400)
     with dummy_file.open() as f:
@@ -42,7 +42,9 @@ def test_local_file_object_exists(temp_path, dummy_file):
         assert HELLO_WORLD == line
 
 def test_local_file_write(temp_path):
-    new_file: io.File = io.File(temp_path, NEW_FILE_NAME, io.FileProviderType.LOCAL_FILE)
+    location: io.StorageLocation = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+    assert not location.contains(NEW_FILE_NAME)
+    new_file: io.File = location.new_file(NEW_FILE_NAME)
     with new_file.open(mode='w') as f_out:
         f_out.writelines(HELLO_WORLD)
     with new_file.open() as f_in:
@@ -51,8 +53,8 @@ def test_local_file_write(temp_path):
 def test_s3_object_exists(dummy_s3_object, s3_client):
     # Sleep for 1 second so that our TTL 1 second case passes as expected.
     time.sleep(1)
-    dummy_file: io.File = io.File(s3_client['bucket'], DUMMY_FILE_NAME, io.FileProviderType.S3,
-                                  client=s3_client['client'])
+    dummy_file: io.File = io.File.init(s3_client['bucket'], DUMMY_FILE_NAME, io.StorageProviderType.S3,
+                                       client=s3_client['client'])
     assert dummy_file.exists()
     assert not dummy_file.exists(ttl_sec=1)
     with dummy_file.open() as f:
@@ -60,8 +62,10 @@ def test_s3_object_exists(dummy_s3_object, s3_client):
         assert HELLO_WORLD == line
 
 def test_s3_write(s3_client):
-    new_file: io.File = io.File(s3_client['bucket'], NEW_FILE_NAME, io.FileProviderType.S3,
-                                client=s3_client['client'])
+    location: io.StorageLocation = io.StorageLocation(s3_client['bucket'], io.StorageProviderType.S3,
+                                                      client=s3_client['client'])
+    assert not location.contains(NEW_FILE_NAME)
+    new_file: io.File = location.new_file(NEW_FILE_NAME)
     with new_file.open(mode='w') as f_out:
         f_out.writelines(HELLO_WORLD)
     with new_file.open() as f_in:

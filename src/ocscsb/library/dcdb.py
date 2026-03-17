@@ -7,7 +7,7 @@ import requests
 
 from rich import print
 
-from ocscsb.library.io import IOManager
+from ocscsb.library import io
 
 
 def ensure_grid_id_exists(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -41,15 +41,16 @@ def check_order_status(order_url: str, max_tries: int = 10) -> tuple[str,str|Non
     print(f"[red]Error:[/] Failed to retrieve a valid order status after {max_tries} attempts.")
     return 'error', None
 
+
 # Download CSV from the provided URL
-def download_csv(url: str, local_file_path: Path) -> bool:
+def download_csv(url: str, csv_file: io.File) -> bool:
     try:
         response = requests.get(url, stream=True, timeout=60)
         if response.status_code == 200:
-            with open(local_file_path, 'wb') as file:
+            with csv_file.open(mode='wb') as file:
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
-            print(f"[blue]Info:[/] CSV file has been downloaded to {local_file_path}")
+            print(f"[blue]Info:[/] CSV file has been downloaded to {csv_file.get_uri()}")
             return True
         else:
             print(f"[red]Error:[/] Failed to download CSV. HTTP status code: {response.status_code}")
@@ -57,7 +58,7 @@ def download_csv(url: str, local_file_path: Path) -> bool:
         print(f'[red]Error:[/] Failed downloading {url}: {e}')
     return False
 
-def process_tile(bbox: str, email: str, start_date: str, tile_name: str, output_directory: Path, **kwargs) -> None:
+def process_tile(bbox: str, email: str, start_date: str, tile_name: str, storage_location: io.StorageLocation, **kwargs) -> None:
     print(f"[blue]Info:[/] Processing GRID_ID {tile_name} with bbox: {bbox}")
     payload = {
         "email": email,
@@ -107,8 +108,8 @@ def process_tile(bbox: str, email: str, start_date: str, tile_name: str, output_
             assert isinstance(output_location, str)
             filename = output_location.split('/')[-1]
             download_url: str = f'https://order-pickup.s3.amazonaws.com/{filename}'
-            local_file_path: Path = output_directory  / f'{tile_name}.csv'
-            if download_csv(download_url, local_file_path):
+            csv_file: io.File = storage_location.new_file(f"{tile_name}.csv")
+            if download_csv(download_url, csv_file):
                 print(f"[blue]Info:[/] CSV file for GRID_ID {tile_name} processing can start now.")
             return
         elif status == 'error':
@@ -121,11 +122,3 @@ def process_tile(bbox: str, email: str, start_date: str, tile_name: str, output_
 
     if retry_count == max_retries:
         print(f"[red]Error:[/] Order for GRID_ID {tile_name} did not complete after {max_retries} attempts.")
-
-# Check if the CSV file already exists (this prevents tiles to be downloaded again if the program crashed halfway through)
-def csv_file_exists(io_mgr: IOManager, tile_name: str, output_location: str,
-                    *,
-
-                    ttl_hours: int = 72) -> bool:
-    # Construct the path where the CSV file would be saved
-    return io_mgr.object_exists(f"{tile_name}.csv")
