@@ -10,6 +10,8 @@ from smart_open import open as sopen
 import boto3
 import botocore.exceptions
 
+from ocscsb.library.cloud import aws
+
 # 72-hours TTL
 DEFAULT_TTL_SEC = 259_200
 
@@ -92,7 +94,10 @@ class IOManagerFile(IOManager):
 class IOManagerS3(IOManager):
     def __init__(self, location: str, client: boto3.client):
         super().__init__(location)
-        self._client = client
+        if client is None:
+            self._client = aws.get_boto_client('s3')
+        else:
+            self._client = client
 
     def generate_resource_uri(self, object_name: str,
                               *,
@@ -132,6 +137,8 @@ class IOManagerS3(IOManager):
 class StorageProviderType(Enum):
     LOCAL_FILE = 1
     S3 = 2
+STORAGE_PROVIDER_TYPES = [e.name.lower() for e in list(StorageProviderType)]
+STORAGE_PROVIDER_TYPE_DEFAULT = StorageProviderType.LOCAL_FILE.name.lower()
 
 class File:
     def __init__(self, location: str, object_name: str, io_mgr: IOManager):

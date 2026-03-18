@@ -22,7 +22,7 @@ ${DOCKER_COMPOSE} exec -t garage /garage layout apply --version 1
 
 # Create access key and allow it to create buckets
 echo "Creating access key"
-${DOCKER_COMPOSE} exec -t garage /garage > ${CONTENT_ROOT}/${GARAGE_KEY_FILENAME} key create garage-app-key
+${DOCKER_COMPOSE} --ansi never exec -t garage /garage > ${CONTENT_ROOT}/${GARAGE_KEY_FILENAME} key create garage-app-key
 ${DOCKER_COMPOSE} exec -t garage /garage key allow --create-bucket garage-app-key
 
 # Get AWS credentials

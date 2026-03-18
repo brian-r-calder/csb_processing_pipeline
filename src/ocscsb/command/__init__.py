@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import traceback
+
 import click
 from rich import print
 import geopandas as gpd
@@ -37,6 +38,7 @@ from ocscsb.library.geotiff import (
     diff_grid_to_geotiff
 )
 
+storage_provider_choice: click.Choice = click.Choice(io.STORAGE_PROVIDER_TYPES)
 
 @click.version_option(version=version)
 @click.group()
@@ -45,10 +47,13 @@ def cli():
 
 @click.command()
 @click.argument('input_shp', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
-@click.argument('output_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('output_location', type=str)
 @click.argument('email', type=str)
 @click.argument('start_date', type=str, default='1970-01-01')
-def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
+@click.option('--provider', type=storage_provider_choice, default=io.STORAGE_PROVIDER_TYPE_DEFAULT,
+              show_default=True, show_choices=True)
+def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
+           provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT):
     '''Search the DCDB archive API for CSB files from AWS.
 
     This command queries the DCDB point-store API on AWS to find the CSV versions of the contributed CSB
@@ -56,7 +61,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
     are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
     filtered to be after START_DATE (default: 1970-01-01).
     '''
-    storage: io.StorageLocation = io.StorageLocation(output_dir, io.StorageProviderType.LOCAL_FILE)
+    storage: io.StorageLocation = io.StorageLocation(output_location, io.StorageProviderType[provider.upper()])
 
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 
