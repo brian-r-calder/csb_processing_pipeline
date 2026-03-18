@@ -213,3 +213,6 @@ data/
 
 # Test artifacts
 tests/keys
+
+# Test credentials
+.garage-app-key
