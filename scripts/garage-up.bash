@@ -2,7 +2,7 @@
 set -eu -o pipefail
 CONTENT_ROOT=$(realpath "$(dirname $0)/..")
 
-source ${CONTENT_ROOT}/scripts/init.bash
+source ${CONTENT_ROOT}/scripts/init.sh
 
 # Bring up Garage docker compose stack
 ${DOCKER_COMPOSE} up --wait

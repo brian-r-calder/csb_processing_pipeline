@@ -1,6 +1,4 @@
-#!/usr/bin/env bash
-set -eu -o pipefail
-
+#!/usr/bin/env sh
 DOCKER_COMPOSE="docker compose -f ${CONTENT_ROOT}/tests/docker-compose.yml"
 
 AWS_REGION=garage
