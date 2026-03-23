@@ -22,6 +22,19 @@ class IOManager(ABC):
     def generate_resource_uri(self, object_name: str,
                               *,
                               sub_path: str | None = None) -> str | Path:
+        """
+        Return the URI for the resource named `object_name` located at `self.location`.
+
+        Parameters
+        ----------
+        object_name
+        sub_path
+
+        Returns
+        -------
+        For non-local file resources (e.g., S3) returns a str representing the URI of the resource.
+        For local file resources (e.g., S3) returns a Path object representing the local file.
+        """
         ...
 
     def object_exists(self, object_name: str,
