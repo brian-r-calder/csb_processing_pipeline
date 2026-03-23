@@ -15,7 +15,7 @@ from ocscsb.library.cloud import aws
 # 72-hours TTL
 DEFAULT_TTL_SEC = 259_200
 
-class IOManager(ABC):
+class StorageProvider(ABC):
     def __init__(self, location: str):
         self.location = location
 
@@ -78,7 +78,7 @@ class IOManager(ABC):
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
 
 
-class IOManagerFile(IOManager):
+class StorageProviderFile(StorageProvider):
     def __init__(self, location: str):
         super().__init__(location)
         self.location_path: Path = Path(self.location).absolute()
@@ -104,7 +104,7 @@ class IOManagerFile(IOManager):
         return stat.st_mtime > (curr_time - ttl_sec)
 
 
-class IOManagerS3(IOManager):
+class StorageProviderS3(StorageProvider):
     def __init__(self, location: str, client: boto3.client):
         super().__init__(location)
         if client is None:
@@ -154,10 +154,10 @@ STORAGE_PROVIDER_TYPES = [e.name.lower() for e in list(StorageProviderType)]
 STORAGE_PROVIDER_TYPE_DEFAULT = StorageProviderType.LOCAL_FILE.name.lower()
 
 class File:
-    def __init__(self, location: str, object_name: str, io_mgr: IOManager):
+    def __init__(self, location: str, object_name: str, storage_provider: StorageProvider):
         self.location = location
         self.object_name = object_name
-        self.io_mgr = io_mgr
+        self.storage_provider = storage_provider
 
     @classmethod
     def init(cls, location: str | Path, object_name: str, provider: StorageProviderType,
@@ -165,29 +165,29 @@ class File:
         location_str: str = str(location)
         match provider:
             case StorageProviderType.LOCAL_FILE:
-                io_mgr: IOManager = IOManagerFile(location_str)
+                storage_provider: StorageProvider = StorageProviderFile(location_str)
             case StorageProviderType.S3:
-                io_mgr: IOManager = IOManagerS3(location_str,
-                                                client=kwargs.get('client', None))
+                storage_provider: StorageProvider = StorageProviderS3(location_str,
+                                                                      client=kwargs.get('client', None))
             case _:
-                raise ValueError(f"Unable to create IO manager for unknown storage provider type {provider.name}")
-        return cls(location_str, object_name, io_mgr)
+                raise ValueError(f"Unable to create IO manager for unknown storage provider type")
+        return cls(location_str, object_name, storage_provider)
 
     def exists(self, *,
                ttl_sec: int = DEFAULT_TTL_SEC):
-        return self.io_mgr.object_exists(self.object_name, ttl_sec=ttl_sec)
+        return self.storage_provider.object_exists(self.object_name, ttl_sec=ttl_sec)
 
     @contextmanager
     def open(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        f = self.io_mgr.open(self.object_name,
-                             mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
+        f = self.storage_provider.open(self.object_name,
+                                       mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
         try:
             yield f
         finally:
             f.close()
 
     def get_uri(self) -> str:
-        return self.io_mgr.generate_resource_uri(self.object_name)
+        return self.storage_provider.generate_resource_uri(self.object_name)
 
 
 class StorageLocation:
@@ -196,18 +196,19 @@ class StorageLocation:
         self.location = str(location)
         match provider:
             case StorageProviderType.LOCAL_FILE:
-                self.io_mgr: IOManager = IOManagerFile(self.location)
+                self.storage_provider: StorageProvider = StorageProviderFile(self.location)
             case StorageProviderType.S3:
-                self.io_mgr: IOManager = IOManagerS3(self.location,
-                                                     client=kwargs.get('client', None))
+                self.storage_provider: StorageProvider = StorageProviderS3(self.location,
+                                                                           client=kwargs.get('client',
+                                                                                             None))
             case _:
-                raise ValueError(f"Unable to create IO manager for unknown storage provider type {provider.name}")
+                raise ValueError(f"Unable to create IO manager for unknown storage provider type")
 
     def new_file(self, object_name: str) -> File:
-        return File(self.location, object_name, self.io_mgr)
+        return File(self.location, object_name, self.storage_provider)
 
     def contains(self, object_name: str,
                  *,
                  ttl_sec: int = DEFAULT_TTL_SEC,
                  sub_path: str | None = None) -> bool:
-        return self.io_mgr.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
+        return self.storage_provider.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
