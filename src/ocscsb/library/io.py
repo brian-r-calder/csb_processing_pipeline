@@ -15,6 +15,7 @@ from ocscsb.library.cloud import aws
 # 72-hours TTL
 DEFAULT_TTL_SEC = 259_200
 
+
 class StorageProvider(ABC):
     def __init__(self, location: str):
         self.location = location
@@ -77,6 +78,19 @@ class StorageProvider(ABC):
         return sopen(self.generate_resource_uri(object_name),
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
 
+    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
+        str]:
+        """List objects in the storage provider."""
+        ...
+
+    def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
+        """Delete an object from the storage provider."""
+        ...
+
+    def delete_all(self, sub_path: str | None = None) -> bool:
+        """Delete all objects in a sub_path (like rmtree)."""
+        ...
+
 
 class StorageProviderFile(StorageProvider):
     def __init__(self, location: str):
@@ -102,6 +116,39 @@ class StorageProviderFile(StorageProvider):
         curr_time = time.time()
         stat = object_path.stat()
         return stat.st_mtime > (curr_time - ttl_sec)
+
+    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
+        str]:
+        search_path = self.location_path
+        if sub_path is not None:
+            search_path = search_path / sub_path
+        if not search_path.exists():
+            return []
+
+        pattern = "*"
+        if prefix:
+            pattern = f"{prefix}{pattern}"
+        if suffix:
+            pattern = f"{pattern}{suffix}"
+
+        return [p.name for p in search_path.glob(pattern) if p.is_file()]
+
+    def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
+        object_path = self.generate_resource_uri(object_name, sub_path=sub_path)
+        if object_path.exists():
+            object_path.unlink()
+            return True
+        return False
+
+    def delete_all(self, sub_path: str | None = None) -> bool:
+        target_path = self.location_path
+        if sub_path is not None:
+            target_path = target_path / sub_path
+        if target_path.exists() and target_path.is_dir():
+            import shutil
+            shutil.rmtree(target_path)
+            return True
+        return False
 
 
 class StorageProviderS3(StorageProvider):
@@ -146,12 +193,70 @@ class StorageProviderS3(StorageProvider):
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      transport_params={'client': self._client})
 
+    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
+        str]:
+        bucket = self.location
+        full_prefix = ""
+        if sub_path:
+            full_prefix = f"{sub_path}/"
+        if prefix:
+            full_prefix = f"{full_prefix}{prefix}"
+
+        paginator = self._client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket, Prefix=full_prefix)
+
+        objects = []
+        for page in pages:
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                # Remove sub_path from the key to get just the object name
+                if sub_path and key.startswith(f"{sub_path}/"):
+                    name = key[len(sub_path) + 1:]
+                else:
+                    name = key
+
+                if suffix and not name.endswith(suffix):
+                    continue
+                if name:  # Avoid empty strings or directory markers
+                    objects.append(name)
+        return objects
+
+    def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
+        key = object_name
+        if sub_path:
+            key = f"{sub_path}/{object_name}"
+        try:
+            self._client.delete_object(Bucket=self.location, Key=key)
+            return True
+        except Exception:
+            return False
+
+    def delete_all(self, sub_path: str | None = None) -> bool:
+        if not sub_path:
+            # We probably don't want to delete the whole bucket by default
+            return False
+
+        bucket = self.location
+        prefix = f"{sub_path}/"
+
+        paginator = self._client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+
+        for page in pages:
+            if 'Contents' in page:
+                delete_keys = {'Objects': [{'Key': obj['Key']} for obj in page['Contents']]}
+                self._client.delete_objects(Bucket=bucket, Delete=delete_keys)
+        return True
+
 
 class StorageProviderType(Enum):
     LOCAL_FILE = 1
     S3 = 2
+
+
 STORAGE_PROVIDER_TYPES = [e.name.lower() for e in list(StorageProviderType)]
 STORAGE_PROVIDER_TYPE_DEFAULT = StorageProviderType.LOCAL_FILE.name.lower()
+
 
 class File:
     def __init__(self, location: str, object_name: str, storage_provider: StorageProvider):
@@ -180,14 +285,18 @@ class File:
     @contextmanager
     def open(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
         f = self.storage_provider.open(self.object_name,
-                                       mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
+                                       mode=mode, buffering=buffering, encoding=encoding, errors=errors,
+                                       newline=newline)
         try:
             yield f
         finally:
             f.close()
 
     def get_uri(self) -> str:
-        return self.storage_provider.generate_resource_uri(self.object_name)
+        return str(self.storage_provider.generate_resource_uri(self.object_name))
+
+    def delete(self) -> bool:
+        return self.storage_provider.delete_object(self.object_name)
 
 
 class StorageLocation:
@@ -212,3 +321,37 @@ class StorageLocation:
                  ttl_sec: int = DEFAULT_TTL_SEC,
                  sub_path: str | None = None) -> bool:
         return self.storage_provider.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
+
+    def list_files(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
+        File]:
+        names = self.storage_provider.list_objects(prefix=prefix, suffix=suffix, sub_path=sub_path)
+        # Handle sub_path in File object name?
+        # Actually io.File seems to take object_name as relative to location
+        files = []
+        for name in names:
+            obj_name = name
+            if sub_path:
+                obj_name = f"{sub_path}/{name}"
+            files.append(File(self.location, obj_name, self.storage_provider))
+        return files
+
+    def delete_file(self, object_name: str, sub_path: str | None = None) -> bool:
+        return self.storage_provider.delete_object(object_name, sub_path=sub_path)
+
+    def delete_all(self, sub_path: str | None = None) -> bool:
+        return self.storage_provider.delete_all(sub_path=sub_path)
+
+    def get_uri(self, object_name: str | None = None, sub_path: str | None = None) -> str:
+        if object_name is None:
+            # Return URI of the location itself
+            if isinstance(self.storage_provider, StorageProviderFile):
+                p = self.storage_provider.location_path
+                if sub_path:
+                    p = p / sub_path
+                return str(p)
+            else:
+                uri = f"s3://{self.location}"
+                if sub_path:
+                    uri = f"{uri}/{sub_path}"
+                return uri
+        return str(self.storage_provider.generate_resource_uri(object_name, sub_path=sub_path))

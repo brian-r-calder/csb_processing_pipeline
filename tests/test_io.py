@@ -70,3 +70,154 @@ def test_s3_write(s3_client):
         f_out.writelines(HELLO_WORLD)
     with new_file.open() as f_in:
         assert HELLO_WORLD == f_in.readline()
+
+def test_local_list_objects(temp_path):
+    # Create some files
+    (temp_path / "test1.txt").write_text("content1")
+    (temp_path / "test2.txt").write_text("content2")
+    (temp_path / "other.dat").write_text("other")
+
+    sub = temp_path / "sub"
+    sub.mkdir()
+    (sub / "sub1.txt").write_text("subcontent")
+
+    location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+
+    # List all
+    files = location.list_files()
+    names = [f.object_name for f in files]
+    assert "test1.txt" in names
+    assert "test2.txt" in names
+    assert "other.dat" in names
+    assert len(names) == 3
+
+    # List with suffix
+    files = location.list_files(suffix=".txt")
+    names = [f.object_name for f in files]
+    assert "test1.txt" in names
+    assert "test2.txt" in names
+    assert "other.dat" not in names
+    assert len(names) == 2
+
+    # List sub_path
+    files = location.list_files(sub_path="sub")
+    names = [f.object_name for f in files]
+    assert "sub/sub1.txt" in names
+    assert len(names) == 1
+
+def test_local_delete(temp_path):
+    f_path = temp_path / "delete_me.txt"
+    f_path.write_text("bye")
+
+    location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+    assert location.contains("delete_me.txt")
+
+    location.delete_file("delete_me.txt")
+    assert not location.contains("delete_me.txt")
+    assert not f_path.exists()
+
+def test_local_delete_all(temp_path):
+    sub = temp_path / "rm_me"
+    sub.mkdir()
+    (sub / "inner.txt").write_text("gone")
+
+    location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+    assert (sub / "inner.txt").exists()
+
+    location.delete_all("rm_me")
+    assert not sub.exists()
+
+def test_get_uri(temp_path):
+    location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+
+    # Location URI
+    assert location.get_uri() == str(temp_path.absolute())
+
+    # Sub-path URI
+    assert location.get_uri(sub_path="sub") == str((temp_path / "sub").absolute())
+
+    # File URI
+    assert location.get_uri("file.txt") == str((temp_path / "file.txt").absolute())
+
+    # File with sub-path URI
+    assert location.get_uri("file.txt", sub_path="sub") == str((temp_path / "sub" / "file.txt").absolute())
+
+def test_s3_list_objects(s3_client):
+    client = s3_client['client']
+    bucket = s3_client['bucket']
+
+    # Create some objects
+    client.put_object(Bucket=bucket, Key="test1.txt", Body=b"content1")
+    client.put_object(Bucket=bucket, Key="test2.txt", Body=b"content2")
+    client.put_object(Bucket=bucket, Key="other.dat", Body=b"other")
+    client.put_object(Bucket=bucket, Key="sub/sub1.txt", Body=b"subcontent")
+
+    location = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
+
+    # List all
+    files = location.list_files()
+    names = [f.object_name for f in files]
+    assert "test1.txt" in names
+    assert "test2.txt" in names
+    assert "other.dat" in names
+    assert "sub/sub1.txt" in names
+    assert len(names) == 4
+
+    # List with suffix
+    files = location.list_files(suffix=".txt")
+    names = [f.object_name for f in files]
+    assert "test1.txt" in names
+    assert "test2.txt" in names
+    assert "sub/sub1.txt" in names
+    assert "other.dat" not in names
+    assert len(names) == 3
+
+    # List sub_path
+    files = location.list_files(sub_path="sub")
+    names = [f.object_name for f in files]
+    assert "sub/sub1.txt" in names
+    assert len(names) == 1
+
+def test_s3_delete(s3_client):
+    client = s3_client['client']
+    bucket = s3_client['bucket']
+
+    client.put_object(Bucket=bucket, Key="delete_me.txt", Body=b"bye")
+
+    location = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
+    assert location.contains("delete_me.txt")
+
+    location.delete_file("delete_me.txt")
+    assert not location.contains("delete_me.txt")
+
+def test_s3_delete_all(s3_client):
+    client = s3_client['client']
+    bucket = s3_client['bucket']
+
+    client.put_object(Bucket=bucket, Key="rm_me/inner1.txt", Body=b"gone")
+    client.put_object(Bucket=bucket, Key="rm_me/inner2.txt", Body=b"gone")
+
+    location = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
+    assert location.contains("rm_me/inner1.txt")
+    assert location.contains("rm_me/inner2.txt")
+
+    location.delete_all("rm_me")
+    assert not location.contains("rm_me/inner1.txt")
+    assert not location.contains("rm_me/inner2.txt")
+
+def test_s3_get_uri(s3_client):
+    client = s3_client['client']
+    bucket = s3_client['bucket']
+    location = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
+
+    # Location URI
+    assert location.get_uri() == f"s3://{bucket}"
+
+    # Sub-path URI
+    assert location.get_uri(sub_path="sub") == f"s3://{bucket}/sub"
+
+    # File URI
+    assert location.get_uri("file.txt") == f"s3://{bucket}/file.txt"
+
+    # File with sub-path URI
+    assert location.get_uri("file.txt", sub_path="sub") == f"s3://{bucket}/sub/file.txt"
