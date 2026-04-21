@@ -37,7 +37,7 @@ from sklearn.preprocessing import StandardScaler
 from scipy.ndimage import uniform_filter1d
 
 from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
-from ocscsb.library import bluetopo
+from ocscsb.library import bluetopo, io
 
 GDAL_VSI_PREFIX: str = '/vsis3/'
 S3_PATH_SEP: str = '/'
@@ -105,34 +105,47 @@ class Processor:
                  bag_file_path: str,
                  output_dir: str,
                  *,
+                 provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT,
                  clean_up_callback: Callable|None = None,
-                 fp_zones: str|None = None,
+                 fp_zones: str | None = None,
                  use_bluetopo: bool = True,
                  use_fes_model: bool = True,
-                 fes_data_path: str|None = None,
-                 fes_yaml_path: str|None = None,
+                 fes_data_path: str | None = None,
+                 fes_yaml_path: str | None = None,
                  run_analysis: bool = False,
                  export_transits: bool = False,
                  run_final_grid: bool = False,
                  export_gp: bool = False,
                  insert_duckdb: bool = False,
                  export_final_gpkg: bool = False,
-                 tessellation_shp: str|None = None,
+                 tessellation_shp: str | None = None,
                  grid_resolution: float = 10.0,
                  organize_vrt: bool = False):
-        self.title = ''
-        self.csb_directory = os.path.abspath(csb_directory)
-        self.bag_file_path = os.path.abspath(bag_file_path)
-        self.output_dir = os.path.abspath(output_dir)
-        self.clean_up_callback = clean_up_callback
-        if fp_zones is None or fp_zones == '':
-            self.fp_zones = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
-        else:
-            self.fp_zones = os.path.abspath(fp_zones)
+        self.title: str = ''
+
+        self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider)
+
         self.use_bluetopo = use_bluetopo
+        self.bag_file_path: io.StorageLocation | None = None
+        if bag_file_path and bag_file_path != '':
+            self.bag_file_path: io.StorageLocation = io.StorageLocation(bag_file_path, provider=provider)
+
+        self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider)
+
+        if fp_zones is None or fp_zones == '':
+            fp_zone_path: str = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
+        else:
+            fp_zone_path: str = fp_zones
+        self.fp_zones = io.File.init(fp_zone_path)
+
         self.use_fes_model = use_fes_model
-        self.fes_data_path = fes_data_path
-        self.fes_yaml_path = fes_yaml_path
+        self.fes_data_path: io.StorageLocation | None = None
+        if fes_data_path and fes_data_path != '':
+            self.fes_data_path = io.StorageLocation(fes_data_path, provider=provider)
+        self.fes_yaml_path: io.StorageLocation | None = None
+        if fes_yaml_path and fes_yaml_path != '':
+            self.fes_yaml_path = io.StorageLocation(fes_yaml_path, provider=provider)
+
         self.run_analysis = run_analysis
         self.export_transits = export_transits
         self.run_final_grid = run_final_grid
@@ -142,6 +155,7 @@ class Processor:
         self.tessellation_shp = tessellation_shp
         self.grid_resolution = grid_resolution
         self.organize_vrt = organize_vrt
+        self.clean_up_callback = clean_up_callback
 
         # setup_logging(output_dir)
         print(f"output_dir is: {output_dir}")

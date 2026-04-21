@@ -194,14 +194,22 @@ class MainWindow:
             self.tessellation_shp_var.set("")
 
     def process_csb_threaded(self):
-        csb_directory = self.csb_var.get()
+        csb_directory = os.path.abspath(self.csb_var.get())
         fp_zones = self.fp_zones_var.get()
+        if fp_zones != '':
+            fp_zones = os.path.abspath(fp_zones)
         bag_file_path = self.BAG_filepath_var.get()
-        output_dir = self.output_dir_var.get()
+        if bag_file_path != '':
+            bag_file_path = os.path.abspath(bag_file_path)
+        output_dir = os.path.abspath(self.output_dir_var.get())
         use_bluetopo = self.bluetopo_var.get()
         use_fes_model = self.fes_model_var.get()
         fes_data_path = self.fes_path_var.get()
+        if fes_data_path != '':
+            fes_data_path = os.path.abspath(fes_data_path)
         fes_yaml_path = self.fes_yaml_var.get()
+        if fes_yaml_path != '':
+            fes_yaml_path = os.path.abspath(fes_yaml_path)
         run_analysis = self.run_analysis_var.get()
         export_transits = self.export_transits_var.get()
         run_final_grid = self.run_final_grid_var.get()

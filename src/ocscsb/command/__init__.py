@@ -61,7 +61,7 @@ def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
     are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
     filtered to be after START_DATE (default: 1970-01-01).
     '''
-    storage: io.StorageLocation = io.StorageLocation(output_location, io.StorageProviderType[provider.upper()])
+    storage: io.StorageLocation = io.StorageLocation(output_location, provider)
 
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 

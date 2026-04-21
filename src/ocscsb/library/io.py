@@ -265,9 +265,20 @@ class File:
         self.storage_provider = storage_provider
 
     @classmethod
-    def init(cls, location: str | Path, object_name: str, provider: StorageProviderType,
+    def init(cls, location: str | Path, *,
+             object_name: str | None = None, provider: StorageProviderType | str = StorageProviderType.LOCAL_FILE,
              **kwargs):
         location_str: str = str(location)
+        if object_name is None:
+            path_comp = location_str.split('/')
+            if len(path_comp) < 2:
+                raise ValueError("location must include object name because object_name was None. "
+                                 f"Location was: {location_str}")
+            object_name = path_comp[-1]
+            location_str = '/'.join(path_comp[:-1])
+
+        if isinstance(provider, str):
+            provider = StorageProviderType[provider.upper()]
         match provider:
             case StorageProviderType.LOCAL_FILE:
                 storage_provider: StorageProvider = StorageProviderFile(location_str)
@@ -300,9 +311,11 @@ class File:
 
 
 class StorageLocation:
-    def __init__(self, location: str | Path, provider: StorageProviderType,
+    def __init__(self, location: str | Path, provider: StorageProviderType | str,
                  **kwargs):
         self.location = str(location)
+        if isinstance(provider, str):
+            provider = StorageProviderType[provider.upper()]
         match provider:
             case StorageProviderType.LOCAL_FILE:
                 self.storage_provider: StorageProvider = StorageProviderFile(self.location)
@@ -349,7 +362,7 @@ class StorageLocation:
                 if sub_path:
                     p = p / sub_path
                 return str(p)
-            else:
+            elif isinstance(self.storage_provider, StorageProviderS3):
                 uri = f"s3://{self.location}"
                 if sub_path:
                     uri = f"{uri}/{sub_path}"
