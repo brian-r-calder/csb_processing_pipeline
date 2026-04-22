@@ -275,7 +275,7 @@ class File:
     @classmethod
     def init(cls, location: str | Path, *,
              object_name: str | None = None, provider: StorageProviderType | str = StorageProviderType.LOCAL_FILE,
-             **kwargs):
+             **kwargs) -> 'File':
         location_str: str = str(location)
         if object_name is None:
             path_comp = location_str.split('/')
@@ -296,6 +296,15 @@ class File:
             case _:
                 raise ValueError(f"Unable to create IO manager for unknown storage provider type")
         return cls(location_str, object_name, storage_provider)
+
+    @classmethod
+    def from_path(cls, path: Path) -> 'File':
+        if not path.is_file():
+            raise ValueError(f"Path {path} is not a file.")
+        path_abs: Path = path.absolute()
+        location_str: str = str(path_abs.parent)
+        storage_provider: StorageProvider = StorageProviderFile(location_str)
+        return cls(location_str, path_abs.name, storage_provider)
 
     def exists(self, *,
                ttl_sec: int = ALWAYS_EXISTS_TTL):

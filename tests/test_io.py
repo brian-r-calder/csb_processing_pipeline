@@ -118,6 +118,12 @@ def test_local_delete(temp_path):
     f_path = temp_path / "delete_me.txt"
     f_path.write_text("bye")
 
+    # Test conversion from Path to io.File
+    f_file: io.File = io.File.from_path(f_path)
+    assert f_file.location == str(temp_path)
+    assert f_file.object_name == "delete_me.txt"
+    assert f_file.exists()
+
     location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
     assert location.contains("delete_me.txt")
 
