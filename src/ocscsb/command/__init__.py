@@ -74,7 +74,7 @@ def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
         tile_name = row['GRID_ID']
         
         # Check if the CSV file for the current tile already exists
-        if storage.contains(f"{tile_name}.csv"):
+        if storage.contains(f"{tile_name}.csv", ttl_sec=io.DEFAULT_TTL_SEC):
             print(f"[orange]Warning:[/] CSV file for GRID_ID {tile_name} already exists. Skipping download.")
             continue
         

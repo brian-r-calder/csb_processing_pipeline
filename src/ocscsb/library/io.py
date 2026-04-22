@@ -23,8 +23,8 @@ class StorageProvider(ABC):
     def __init__(self, location: str):
         self.location = location
 
-    def generate_resource_uri(self, object_name: str,
-                              *,
+    def generate_resource_uri(self, *,
+                              object_name: str | None = None,
                               sub_path: str | None = None) -> str | Path:
         """
         Return the URI for the resource named `object_name` located at `self.location`.
@@ -38,6 +38,25 @@ class StorageProvider(ABC):
         -------
         For non-local file resources (e.g., S3) returns a str representing the URI of the resource.
         For local file resources (e.g., S3) returns a Path object representing the local file.
+        """
+        ...
+
+    def generate_gdal_vsi_path(self, object_name: str,
+                              *,
+                              sub_path: str | None = None) -> str:
+        """
+        Return the GDAL VSI (https://gdal.org/en/stable/user/virtual_file_systems.html) path for the resource
+        named `object_name` located at `self.location`.
+
+        Parameters
+        ----------
+        object_name
+        sub_path
+
+        Returns
+        -------
+        A string beginning with '/vsiPREFIX/...' where PREFIX is a value appropriate to the underlying storage
+        provider (which for local file storage may be the same as the URI).
         """
         ...
 
@@ -79,7 +98,7 @@ class StorageProvider(ABC):
         -------
         A file-like object that can be read from or written to.
         """
-        return sopen(self.generate_resource_uri(object_name),
+        return sopen(self.generate_resource_uri(object_name=object_name),
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
 
     def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
@@ -101,19 +120,26 @@ class StorageProviderFile(StorageProvider):
         super().__init__(location)
         self.location_path: Path = Path(self.location).absolute()
 
-    def generate_resource_uri(self, object_name: str,
-                              *,
+    def generate_resource_uri(self, *,
+                              object_name: str | None = None,
                               sub_path: str | None = None) -> str | Path:
         object_parent = self.location_path
         if sub_path is not None:
             object_parent = object_parent / sub_path
-        return object_parent / object_name
+        if object_name is not None:
+            return object_parent / object_name
+        return object_parent
+
+    def generate_gdal_vsi_path(self, object_name: str,
+                              *,
+                              sub_path: str | None = None) -> str:
+        return str(self.generate_resource_uri(object_name=object_name, sub_path=sub_path))
 
     def object_exists(self, object_name: str,
                       *,
                       ttl_sec: int = DEFAULT_TTL_SEC,
                       sub_path: str | None = None) -> bool:
-        object_path: Path = cast(Path, self.generate_resource_uri(object_name, sub_path=sub_path))
+        object_path: Path = cast(Path, self.generate_resource_uri(object_name=object_name, sub_path=sub_path))
         if not object_path.exists():
             return False
         if ttl_sec == ALWAYS_EXISTS_TTL:
@@ -141,7 +167,7 @@ class StorageProviderFile(StorageProvider):
         return [p.name for p in search_path.glob(pattern) if p.is_file()]
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
-        object_path = self.generate_resource_uri(object_name, sub_path=sub_path)
+        object_path = self.generate_resource_uri(object_name=object_name, sub_path=sub_path)
         if object_path.exists():
             object_path.unlink()
             return True
@@ -165,13 +191,23 @@ class StorageProviderS3(StorageProvider):
         else:
             self._client = client
 
-    def generate_resource_uri(self, object_name: str,
-                              *,
+    def generate_resource_uri(self, *,
+                              object_name: str | None = None,
                               sub_path: str | None = None) -> str | Path:
+        object_parent = self.location
         if sub_path is not None:
-            return f"s3://{self.location}/{sub_path}/{object_name}"
+            object_parent = f"{object_parent}/{sub_path}"
+        if object_name is not None:
+            return f"s3://{object_parent}/{object_name}"
+        return f"s3://{object_parent}"
+
+    def generate_gdal_vsi_path(self, object_name: str,
+                               *,
+                               sub_path: str | None = None) -> str:
+        if sub_path is not None:
+            return f"/vsis3/{self.location}/{sub_path}/{object_name}"
         else:
-            return f"s3://{self.location}/{object_name}"
+            return f"/vsis3/{self.location}/{object_name}"
 
     def object_exists(self, object_name: str,
                       *,
@@ -197,7 +233,7 @@ class StorageProviderS3(StorageProvider):
             raise e
 
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        return sopen(self.generate_resource_uri(object_name),
+        return sopen(self.generate_resource_uri(object_name=object_name),
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      transport_params={'client': self._client})
 
@@ -275,7 +311,7 @@ class File:
     @classmethod
     def init(cls, location: str | Path, *,
              object_name: str | None = None, provider: StorageProviderType | str = StorageProviderType.LOCAL_FILE,
-             **kwargs):
+             **kwargs) -> 'File':
         location_str: str = str(location)
         if object_name is None:
             path_comp = location_str.split('/')
@@ -297,25 +333,35 @@ class File:
                 raise ValueError(f"Unable to create IO manager for unknown storage provider type")
         return cls(location_str, object_name, storage_provider)
 
+    @classmethod
+    def from_path(cls, path: Path) -> 'File':
+        if not path.is_file():
+            raise ValueError(f"Path {path} is not a file.")
+        path_abs: Path = path.absolute()
+        location_str: str = str(path_abs.parent)
+        storage_provider: StorageProvider = StorageProviderFile(location_str)
+        return cls(location_str, path_abs.name, storage_provider)
+
     def exists(self, *,
                ttl_sec: int = ALWAYS_EXISTS_TTL):
         return self.storage_provider.object_exists(self.object_name, ttl_sec=ttl_sec)
 
-    @contextmanager
     def open(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        f = self.storage_provider.open(self.object_name,
-                                       mode=mode, buffering=buffering, encoding=encoding, errors=errors,
-                                       newline=newline)
-        try:
-            yield f
-        finally:
-            f.close()
+        return self.storage_provider.open(self.object_name,
+                                          mode=mode, buffering=buffering, encoding=encoding, errors=errors,
+                                          newline=newline)
 
     def get_uri(self) -> str:
-        return str(self.storage_provider.generate_resource_uri(self.object_name))
+        return str(self.storage_provider.generate_resource_uri(object_name=self.object_name))
+
+    def get_gdal_vsi_path(self) -> str:
+        return self.storage_provider.generate_gdal_vsi_path(self.object_name)
 
     def get_stem(self) -> str:
         return Path(self.object_name).stem
+
+    def get_suffix(self) -> str:
+        return Path(self.object_name).suffix
 
     def delete(self) -> bool:
         return self.storage_provider.delete_object(self.object_name)
@@ -369,16 +415,4 @@ class StorageLocation:
         return StorageLocation(f"{self.location}/{sub_location}", self.provider_type)
 
     def get_uri(self, object_name: str | None = None, sub_path: str | None = None) -> str:
-        if object_name is None:
-            # Return URI of the location itself
-            if isinstance(self.storage_provider, StorageProviderFile):
-                p = self.storage_provider.location_path
-                if sub_path:
-                    p = p / sub_path
-                return str(p)
-            elif isinstance(self.storage_provider, StorageProviderS3):
-                uri = f"s3://{self.location}"
-                if sub_path:
-                    uri = f"{uri}/{sub_path}"
-                return uri
-        return str(self.storage_provider.generate_resource_uri(object_name, sub_path=sub_path))
+        return str(self.storage_provider.generate_resource_uri(object_name=object_name, sub_path=sub_path))

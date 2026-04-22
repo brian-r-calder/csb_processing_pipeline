@@ -39,9 +39,17 @@ def test_local_file_object_exists(temp_path, dummy_file):
     assert dummy_file.exists()
     assert not dummy_file.exists(ttl_sec=io.DEFAULT_TTL_SEC)
     assert dummy_file.exists(ttl_sec=8 * 86_400)
+    # Test io.File.open() as a contextmanager
     with dummy_file.open() as f:
         line = f.readline()
         assert HELLO_WORLD == line
+
+    # Test io.File.open() directly
+    def reader(fd) -> str:
+        return fd.read()
+
+    assert HELLO_WORLD == reader(dummy_file.open())
+
 
 def test_local_file_write(temp_path):
     location: io.StorageLocation = io.StorageLocation(temp_path, 'LOCAL_FILE')
@@ -97,8 +105,10 @@ def test_local_list_objects(temp_path):
 
     # Verify stem
     expected_stems = ['test1', 'test2', 'other']
+    expected_suffixes = ['.txt', '.txt', '.dat']
     for i, f in enumerate(files):
         assert f.get_stem() == expected_stems[i]
+        assert f.get_suffix() == expected_suffixes[i]
 
     # List with suffix
     files = location.list_files(suffix=".txt")
@@ -117,6 +127,12 @@ def test_local_list_objects(temp_path):
 def test_local_delete(temp_path):
     f_path = temp_path / "delete_me.txt"
     f_path.write_text("bye")
+
+    # Test conversion from Path to io.File
+    f_file: io.File = io.File.from_path(f_path)
+    assert f_file.location == str(temp_path)
+    assert f_file.object_name == "delete_me.txt"
+    assert f_file.exists()
 
     location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
     assert location.contains("delete_me.txt")
@@ -147,9 +163,16 @@ def test_get_uri(temp_path):
 
     # File URI
     assert location.get_uri("file.txt") == str((temp_path / "file.txt").absolute())
+    # As an actual io.File
+    eff: io.File = location.new_file("file.txt")
+    assert eff.get_uri() == location.get_uri("file.txt")
+    assert eff.get_gdal_vsi_path() == location.get_uri("file.txt")
 
     # File with sub-path URI
     assert location.get_uri("file.txt", sub_path="sub") == str((temp_path / "sub" / "file.txt").absolute())
+    eff: io.File = location.new_file("sub/file.txt")
+    assert eff.get_uri() == location.get_uri("file.txt", sub_path="sub")
+    assert eff.get_gdal_vsi_path() == location.get_uri("file.txt", sub_path="sub")
 
 def test_s3_list_objects(s3_client):
     client = s3_client['client']
@@ -173,9 +196,9 @@ def test_s3_list_objects(s3_client):
     assert len(names) == 4
 
     # Verify stem
-    expected_stems = ['test1', 'test2', 'other', 'sub1']
     for i, f in enumerate(files):
         assert f.get_stem() == f.object_name.split('/')[-1].split('.')[-2]
+        assert f.get_suffix() == f".{f.object_name.split('/')[-1].split('.')[-1]}"
 
     # List with suffix
     files = location.list_files(suffix=".txt")
@@ -232,6 +255,13 @@ def test_s3_get_uri(s3_client):
 
     # File URI
     assert location.get_uri("file.txt") == f"s3://{bucket}/file.txt"
+    # As an actual io.File
+    eff: io.File = location.new_file("file.txt")
+    assert eff.get_uri() == location.get_uri("file.txt")
+    assert eff.get_gdal_vsi_path() == f"/vsis3/{bucket}/file.txt"
 
     # File with sub-path URI
     assert location.get_uri("file.txt", sub_path="sub") == f"s3://{bucket}/sub/file.txt"
+    eff: io.File = location.new_file("sub/file.txt")
+    assert eff.get_uri() == location.get_uri("file.txt", sub_path="sub")
+    assert eff.get_gdal_vsi_path() == f"/vsis3/{bucket}/sub/file.txt"

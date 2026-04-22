@@ -127,9 +127,9 @@ class Processor:
         self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider)
 
         self.use_bluetopo = use_bluetopo
-        self.bag_file_path: io.StorageLocation | None = None
+        self.bag_file_path: io.File | None = None
         if bag_file_path and bag_file_path != '':
-            self.bag_file_path: io.StorageLocation = io.StorageLocation(bag_file_path, provider=provider)
+            self.bag_file_path: io.File = io.File.init(bag_file_path, provider=provider)
 
         self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider)
 
@@ -147,6 +147,8 @@ class Processor:
         if fes_yaml_path and fes_yaml_path != '':
             self.fes_yaml_path = io.StorageLocation(fes_yaml_path, provider=provider)
 
+        self.duckdb_path: Path = self.tmp_dir / 'csb.duckdb'
+
         self.run_analysis = run_analysis
         self.export_transits = export_transits
         self.run_final_grid = run_final_grid
@@ -161,14 +163,14 @@ class Processor:
         # setup_logging(output_dir)
         print(f"output_dir is: {output_dir}")
 
-    def load_csb(self, csb_file: str):
+    def load_csb(self, csb_file: io.File) -> gpd.GeoDataFrame:
         print('*****Reading CSB input csv file in chunks*****')
 
         chunk_size = 5_000_000
         processed_chunks = []
 
         # This creates an iterator that yields a DataFrame chunk on each loop
-        with pd.read_csv(csb_file, chunksize=chunk_size, low_memory=False) as reader:
+        with pd.read_csv(csb_file.open(), chunksize=chunk_size, low_memory=False) as reader:
             for i, chunk in enumerate(reader):
                 print(f"Processing chunk {i + 1}...")
 
@@ -204,7 +206,7 @@ class Processor:
 
     def create_convex_hull_and_download_tiles(self,
                                               csb_file: io.File,
-                                              title: str) -> Path:
+                                              title: str) -> io.File:
         """
         Loads CSB data, builds a convex hull, and writes it to a shapefile.
         As part of doing so, creates a dedicated Modeling folder,
@@ -242,16 +244,19 @@ class Processor:
             gdal.BuildVRT(vrt_path, tile_files)
         print(f"Created VRT at {str(vrt_path)}")
 
-        return vrt_path
+        return io.File.from_path(vrt_path)
 
     def read_master_offsets(self):
         """Reads the master offsets from a CSV file."""
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-
-        if os.path.exists(MASTER_OFFSET_FILE):
-            return pd.read_csv(MASTER_OFFSET_FILE)
+        master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
+        if master_offset_file.exists():
+            print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
+            return pd.read_csv(master_offset_file.open())
         else:
-            return pd.DataFrame(columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range', 'tile_name'])
+            print("No master_offsets.csv found. Will create a new one.")
+            return pd.DataFrame(
+                columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
+                         'tile_name'])
 
     def update_master_offsets(self,
                               unique_id, platform_name, new_offset, std_dev, date_range):
@@ -352,7 +357,11 @@ class Processor:
         return trimmed_df
 
     def create_survey_outline(self,
-                              raster_path, output_dir, title, desired_resolution=8, dilation_iterations=3, erosion_iterations=2):
+                              title: str,
+                              raster_path: Path, *,
+                              desired_resolution: float = 8,
+                              dilation_iterations: int = 3,
+                              erosion_iterations: int = 2) -> Path:
         print("starting create_survey_outline() function")
         with rasterio.open(raster_path) as raster:
             # Resample the raster
@@ -407,10 +416,10 @@ class Processor:
             geo_df['geometry'] = geo_df.geometry.apply(lambda geom: geom.buffer(0) if not geom.is_valid else geom)
 
             # Save to a shapefile
-            bathy_polygon_shp = f"{output_dir}/{title}_bathy_polygon.shp"
+            bathy_polygon_shp = self.tmp_dir / f"{title}_bathy_polygon.shp"
             geo_df.to_file(bathy_polygon_shp, driver='ESRI Shapefile')
 
-            print('Bathymetry polygon shapefile created.')
+            print(f"Bathymetry polygon shapefile {str(bathy_polygon_shp)} created.")
             return bathy_polygon_shp
 
     def apply_fes_tides(self, gdf):
@@ -446,8 +455,8 @@ class Processor:
         print("***** FES tide correction complete. Depths are referenced to approx. LAT. *****")
         return gdf
 
-    def tides(self, csb_file: str):
-        gdf = self.load_csb(csb_file)
+    def tides(self, csb_file: io.File) -> pd.DataFrame:
+        gdf: gpd.GeoDataFrame = self.load_csb(csb_file)
 
         if self.use_fes_model:
             # --- Route to the new FES model function ---
@@ -463,7 +472,7 @@ class Processor:
             # --- Route to the original NOAA zoned tide logic ---
             print('CSB data from csv file loaded. Starting NOAA tide correction')
 
-            zones = gpd.read_file(self.fp_zones)
+            zones = gpd.read_file(self.fp_zones.open())
             join = gpd.sjoin(gdf, zones, how='inner', predicate='within')
             join = join.astype({'time': 'datetime64[us]'})
             join = join.sort_values('time')
@@ -562,24 +571,26 @@ class Processor:
 
         return csb_corr
 
-    def extract_bag(self, bag_file):
+    def extract_bag(self, title: str, bag_file: io.File) -> tuple[Path, Path]:
         print("starting BAGextract() function")
-        BAG_filepath = os.path.abspath(bag_file)
-        print("DEBUG - BAG_filepath:", bag_file)
+        # BAG_filepath = os.path.abspath(bag_file)
+        print("DEBUG - bag_file: ", bag_file.get_uri())
         print('*****Starting to import reference bathy*****')
 
-        output_raster_wgs84 = os.path.join(self.output_dir, self.title + '_wgs84.tif')
-        temp_vrt_path = os.path.join(self.output_dir, 'temp_for_warp.vrt')
+        output_raster_wgs84 = self.tmp_dir / f"{title}_wgs84.tif"
+        # temp_vrt_path: Path = self.tmp_dir / 'temp_for_warp.vrt'
 
         print("Warping input raster to standard WGS84 (EPSG:4269)...")
 
-        input_for_warp = BAG_filepath
+        input_for_warp = bag_file.get_gdal_vsi_path()
 
         # For BAG files, we first create a VRT to select the depth and uncertainty bands
-        if BAG_filepath.lower().endswith('.bag'):
+        # if BAG_filepath.lower().endswith('.bag'):
+        if bag_file.get_suffix() == '.bag':
             print("BAG file detected, creating temporary VRT to select bands 1 and 2...")
             # gdal.BuildVRT is the correct place to use bandList
-            gdal.BuildVRT(temp_vrt_path, BAG_filepath, bandList=[1, 2])
+            temp_vrt_path: Path = self.tmp_dir / 'temp_for_warp.vrt'
+            gdal.BuildVRT(temp_vrt_path, bag_file.get_gdal_vsi_path(), bandList=[1, 2])
             input_for_warp = temp_vrt_path
 
         # BIGTIFF=YES' to creationOptions to allow files larger than 4GB
@@ -595,14 +606,10 @@ class Processor:
                       creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
                       dstNodata=1000000)
 
-        # Clean up the temporary VRT file if it was created
-        if os.path.exists(temp_vrt_path):
-            os.remove(temp_vrt_path)
-
         print("Reference raster prepared successfully.")
 
         # Call create_survey_outline to generate the bathymetry polygon shapefile
-        bathy_polygon_shp = self.create_survey_outline(output_raster_wgs84, self.output_dir, self.title)
+        bathy_polygon_shp: Path = self.create_survey_outline(title, output_raster_wgs84)
 
         return output_raster_wgs84, bathy_polygon_shp
 
@@ -642,12 +649,18 @@ class Processor:
 
         return processed_samples
 
-    def derive_draft(self, csb_file, bag_file, master_offsets_df, report=None):  # Added report default for safety
-        output_raster, raster_boundary_shp = self.extract_bag(bag_file)
-        csb_corr = self.tides(csb_file)
+    def derive_draft(self,
+                     title: str,
+                     csb_file: io.File,
+                     bag_file: io.File,
+                     master_offsets_df: pd.DataFrame, *,
+                     report=None) -> pd.DataFrame:
+        output_raster, raster_boundary_shp = self.extract_bag(title, bag_file)
+        csb_corr: pd.DataFrame = self.tides(csb_file)
 
         vessels_with_offsets = master_offsets_df['unique_id'].unique().tolist()
-        if report: report.add_statistic("Vessels with existing offsets", len(vessels_with_offsets))
+        if report:
+            report.add_statistic("Vessels with existing offsets", len(vessels_with_offsets))
 
         raster_boundary = gpd.read_file(raster_boundary_shp)
         raster_boundary['geometry'] = raster_boundary['geometry'].apply(
@@ -741,16 +754,11 @@ class Processor:
 
         return csb_corr
 
-    def insert_into_duckdb(self, gdf, duckdb_path):
+    def insert_into_duckdb(self, gdf: gpd.GeoDataFrame):
         """
         Inserts (or appends) data, automatically upgrading the table schema if necessary.
         -- FINAL, ROBUST VERSION --
         """
-        # Ensure the directory for the DuckDB file exists.
-        duckdb_dir = os.path.dirname(duckdb_path)
-        if not os.path.exists(duckdb_dir):
-            os.makedirs(duckdb_dir, exist_ok=True)
-
         df = gdf.copy()
         if 'geometry' in df.columns:
             df['wkb_geom'] = df['geometry'].apply(lambda geom: geom.wkb if geom is not None else None)
@@ -778,7 +786,7 @@ class Processor:
         df = df[master_columns]  # Ensure consistent order
 
         try:
-            with duckdb.connect(database=duckdb_path, read_only=False) as con:
+            with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
                 # Check if the 'csb' table exists
                 table_exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='csb'").fetchone()
 
@@ -805,13 +813,17 @@ class Processor:
                 con.register("temp_df", df)
                 con.execute(f"INSERT INTO csb ({col_list_for_insert}) SELECT * FROM temp_df")
 
-            print(f"Data successfully appended to DuckDB table at {duckdb_path}.")
+            print(f"Data successfully appended to DuckDB table at {str(self.duckdb_path)}.")
         except Exception as e:
             print(f"CRITICAL ERROR inserting into DuckDB: {e}")
             raise e
 
-    def draft_corr(self, csb_file, bag_file, master_offsets_df):
-        csb_corr = self.derive_draft(csb_file, bag_file, master_offsets_df)
+    def draft_corr(self,
+                   title: str,
+                   csb_file: io.File,
+                   bag_file: io.File,
+                   master_offsets_df: pd.DataFrame) -> gpd.GeoDataFrame:
+        csb_corr: pd.DataFrame = self.derive_draft(title, csb_file, bag_file, master_offsets_df)
 
         # Merge the CSB data with the master offsets based on unique vessel ID
         # This will now include any newly derived offsets from the step above
@@ -832,13 +844,16 @@ class Processor:
         # Instead of immediately exporting to geopackage, return the processed GeoDataFrame.
         return csb_corr1
 
-    def rasterize_csb(self, csb_file, bag_file, master_offsets_df):
-        csb_corr1 = self.draft_corr(csb_file, bag_file, master_offsets_df)
+    def rasterize_csb(self,
+                      title: str,
+                      csb_file: io.File,
+                      bag_file: io.File,
+                      master_offsets_df: pd.DataFrame):
+        csb_corr1: gpd.GeoDataFrame = self.draft_corr(title, csb_file, bag_file, master_offsets_df)
 
         # Insert processed data into DuckDB.
         if self.insert_duckdb:
-            duckdb_path = os.path.join(self.output_dir, "csb.duckdb")
-            self.insert_into_duckdb(csb_corr1, duckdb_path)
+            self.insert_into_duckdb(csb_corr1)
 
         # Optionally export as geopackage if the checkbox is selected.
         if self.export_gp:
@@ -971,10 +986,9 @@ class Processor:
         Main function for the final gridding and export stage.
         """
         print("\n***** Starting Final Gridding & Export Stage *****")
-        db_path = os.path.join(self.output_dir, "csb.duckdb")
         output_folder = os.path.join(self.output_dir, "final_products")
         os.makedirs(output_folder, exist_ok=True)
-        with duckdb.connect(database=db_path, read_only=False) as con:
+        with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
             if self.tessellation_shp is not None and os.path.exists(self.tessellation_shp):
                 print(f"Using tessellation scheme: {self.tessellation_shp}")
                 polygons_gdf = gpd.read_file(self.tessellation_shp)
@@ -1099,43 +1113,43 @@ class Processor:
 
         print("***** Final Gridding & Export Stage Complete *****")
 
-    def cleanup_interim_files(self):
-        """
-        Safely removes all temporary and intermediate files and folders created during processing.
-        """
-        print(f"\n--- Cleaning up interim files for {self.title} ---")
-
-        # List of folder paths to remove
-        folders_to_remove = [
-            os.path.join(self.output_dir, "Modeling")
-        ]
-
-        for folder in folders_to_remove:
-            try:
-                if os.path.exists(folder):
-                    shutil.rmtree(folder)
-                    print(f"Removed folder: {folder}")
-            except Exception as e:
-                print(f"Error removing folder {folder}: {e}")
-
-        # List of file patterns to remove
-        file_patterns_to_remove = [
-            os.path.join(self.output_dir, f"{self.title}_5m_MLLW.tif"),
-            os.path.join(self.output_dir, f"{self.title}_wgs84.tif"),
-            os.path.join(self.output_dir, f"{self.title}_intermediate.tif"),
-            os.path.join(self.output_dir, "convex_hull_polygon.*"),
-            os.path.join(self.output_dir, f"{self.title}_bathy_polygon.*")
-        ]
-
-        for pattern in file_patterns_to_remove:
-            files = glob.glob(pattern)
-            for f in files:
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                        print(f"Removed file: {f}")
-                except Exception as e:
-                    print(f"Error removing file {f}: {e}")
+    # def cleanup_interim_files(self):
+    #     """
+    #     Safely removes all temporary and intermediate files and folders created during processing.
+    #     """
+    #     print(f"\n--- Cleaning up interim files for {self.title} ---")
+    #
+    #     # List of folder paths to remove
+    #     folders_to_remove = [
+    #         os.path.join(self.output_dir, "Modeling")
+    #     ]
+    #
+    #     for folder in folders_to_remove:
+    #         try:
+    #             if os.path.exists(folder):
+    #                 shutil.rmtree(folder)
+    #                 print(f"Removed folder: {folder}")
+    #         except Exception as e:
+    #             print(f"Error removing folder {folder}: {e}")
+    #
+    #     # List of file patterns to remove
+    #     file_patterns_to_remove = [
+    #         os.path.join(self.output_dir, f"{self.title}_5m_MLLW.tif"),
+    #         os.path.join(self.output_dir, f"{self.title}_wgs84.tif"),
+    #         os.path.join(self.output_dir, f"{self.title}_intermediate.tif"),
+    #         os.path.join(self.output_dir, "convex_hull_polygon.*"),
+    #         os.path.join(self.output_dir, f"{self.title}_bathy_polygon.*")
+    #     ]
+    #
+    #     for pattern in file_patterns_to_remove:
+    #         files = glob.glob(pattern)
+    #         for f in files:
+    #             try:
+    #                 if os.path.exists(f):
+    #                     os.remove(f)
+    #                     print(f"Removed file: {f}")
+    #             except Exception as e:
+    #                 print(f"Error removing file {f}: {e}")
 
     # --- END: FINAL GRIDDING AND EXPORT FUNCTIONS ---
 
@@ -1515,16 +1529,16 @@ class Processor:
             clean_tmp_on_exit: bool = True):
         try:
             start_time = time.time()
-            # --- Load master offsets once at the start ---
-            master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
-            if master_offset_file.exists():
-                print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
-                master_offsets_df = pd.read_csv(master_offset_file.open())
-            else:
-                print("No master_offsets.csv found. Will create a new one.")
-                master_offsets_df = pd.DataFrame(
-                    columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
-                             'tile_name'])
+            # # --- Load master offsets once at the start ---
+            # master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
+            # if master_offset_file.exists():
+            #     print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
+            #     master_offsets_df = pd.read_csv(master_offset_file.open())
+            # else:
+            #     print("No master_offsets.csv found. Will create a new one.")
+            #     master_offsets_df = pd.DataFrame(
+            #         columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
+            #                  'tile_name'])
 
             final_products: io.StorageLocation = self.output_dir.sub_location('final_products')
 
@@ -1549,28 +1563,27 @@ class Processor:
                     #     print(f"Error deleting old Modeling folder: {e}")
 
                     if self.use_bluetopo:
-                        bag_file = self.create_convex_hull_and_download_tiles(csb_file,
-                                                                              title)
+                        bag_file: io.File = self.create_convex_hull_and_download_tiles(csb_file, title)
+                    elif self.bag_file_path:
+                        bag_file: io.File = self.bag_file_path
                     else:
-                        bag_file = self.bag_file_path
+                        raise Exception(f"Neither bag_file_path nor use_bluetopo where set when one must be.")
 
-                    # ---Pass the master_offsets_df to rasterize_CSB ---
-                    self.rasterize_csb(csb_file, bag_file, master_offsets_df)
-
+                    # Pass the master_offsets_df to rasterize_CSB
+                    self.rasterize_csb(title, csb_file, bag_file, master_offsets_df)
                 except Exception as e:
                     tb.print_exception(e)
                     raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
-                finally:
-                    self.cleanup_interim_files()
+                # finally:
+                #     self.cleanup_interim_files()
 
             if self.run_analysis:
                 print("\n***** Starting Post-Processing Analysis *****")
-                db_path = os.path.join(self.output_dir, "csb.duckdb")
                 hist_export_dir = os.path.join(self.output_dir, "histograms")
                 exports_folder = os.path.join(self.output_dir, "transit_exports")
 
-                if not os.path.exists(db_path):
-                    print(f"Error: DuckDB file not found at {db_path}. Cannot run analysis.")
+                if not self.duckdb_path.exists():
+                    print(f"Error: DuckDB file not found at {str(self.duckdb_path)}. Cannot run analysis.")
                 else:
                     self.run_histograms_calibration_points(db_path, hist_export_dir)
                     self.run_apply_best_offsets(db_path)
