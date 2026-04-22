@@ -1,4 +1,5 @@
 import os
+import tempfile
 from datetime import datetime, timedelta
 import logging
 import sys
@@ -6,6 +7,7 @@ import shutil
 import glob
 import time
 from importlib import resources
+from pathlib import Path
 from typing import Callable
 import traceback as tb
 import gc
@@ -121,8 +123,7 @@ class Processor:
                  tessellation_shp: str | None = None,
                  grid_resolution: float = 10.0,
                  organize_vrt: bool = False):
-        self.title: str = ''
-
+        self.tmp_dir: Path = Path(tempfile.mkdtemp())
         self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider)
 
         self.use_bluetopo = use_bluetopo
@@ -202,50 +203,46 @@ class Processor:
         return gdf
 
     def create_convex_hull_and_download_tiles(self,
-                                              csb_data_path, output_dir,
-                                              title: str,
-                                              bag_file_path: str,
-                                              use_bluetopo=True):
+                                              csb_file: io.File,
+                                              title: str) -> Path:
         """
         Loads CSB data, builds a convex hull, and writes it to a shapefile.
-        If use_bluetopo is True, it creates a dedicated Modeling folder,
+        As part of doing so, creates a dedicated Modeling folder,
         downloads BlueTopo tiles, copies them to a separate archive folder,
         and then builds a VRT from all GeoTIFF files found recursively in that folder.
-        If use_bluetopo is False, it returns the user‐provided BAG_filepath.
         """
 
         # Load CSB data and create convex hull
-        csb_data = pd.read_csv(csb_data_path)
+        csb_data = pd.read_csv(csb_file.open())
         gdf = gpd.GeoDataFrame(csb_data, geometry=gpd.points_from_xy(csb_data.lon, csb_data.lat))
         gdf = gdf.set_crs(4326, allow_override=True)
         convex_hull_polygon = gdf.unary_union.convex_hull
         convex_hull_gdf = gpd.GeoDataFrame(geometry=[convex_hull_polygon], crs=gdf.crs)
-        convex_hull_shapefile = os.path.join(output_dir, "convex_hull_polygon.shp")
+        convex_hull_shapefile = self.tmp_dir / 'convex_hull_polygon.shp'
         convex_hull_gdf.to_file(convex_hull_shapefile)
-        print(f"Convex hull shapefile written to: {convex_hull_shapefile}")
+        convex_hull_shapefile_ = str(convex_hull_shapefile)
+        print(f"Convex hull shapefile written to: {convex_hull_shapefile_}")
 
-        if use_bluetopo:
-            # Create the 'Modeling' folder for storing the VRT referencing GeoTIFFs in S3
-            bluetopo_tiles_dir = os.path.join(output_dir, "Modeling")
-            print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir}...")
-            os.makedirs(bluetopo_tiles_dir, exist_ok=True)
+        # Create the 'Modeling' folder for storing the VRT referencing GeoTIFFs in S3
+        bluetopo_tiles_dir = self.tmp_dir / 'Modeling'
+        bluetopo_tiles_dir_ = str(bluetopo_tiles_dir)
+        print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir_}...")
+        bluetopo_tiles_dir.mkdir(exist_ok=True)
 
-            # Identify BlueTopo tiles that correspond to this convex hull
-            _, _, _, _, tiles = bluetopo.identify_tiles(bluetopo_tiles_dir, convex_hull_shapefile)
-            tile_files = []
-            for tile in tiles:
-                tile_files.append(f"{GDAL_VSI_PREFIX}{tile.bucket}{S3_PATH_SEP}{tile.object}")
-            # Build a VRT from tiles stored in S3, without needing to download them.
-            vrt_dir = os.path.join(output_dir, f"BlueTopo_VRT_{title}")
-            os.makedirs(vrt_dir, exist_ok=True)
-            vrt_path = os.path.join(vrt_dir, f"merged_tiles_{title}.vrt")
-            with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
-                gdal.BuildVRT(vrt_path, tile_files)
-            print(f"Created VRT at {vrt_path}")
-            return vrt_path
-        else:
-            # If not using automated download, assume bag_file_path is provided by the user.
-            return bag_file_path
+        # Identify BlueTopo tiles that correspond to this convex hull
+        _, _, _, _, tiles = bluetopo.identify_tiles(bluetopo_tiles_dir_, convex_hull_shapefile_)
+        tile_files = []
+        for tile in tiles:
+            tile_files.append(f"{GDAL_VSI_PREFIX}{tile.bucket}{S3_PATH_SEP}{tile.object}")
+        # Build a VRT from tiles stored in S3, without needing to download them.
+        vrt_dir = self.tmp_dir / f"BlueTopo_VRT_{title}"
+        vrt_dir.mkdir(exist_ok=True)
+        vrt_path = vrt_dir / f"merged_tiles_{title}.vrt"
+        with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
+            gdal.BuildVRT(vrt_path, tile_files)
+        print(f"Created VRT at {str(vrt_path)}")
+
+        return vrt_path
 
     def read_master_offsets(self):
         """Reads the master offsets from a CSV file."""
@@ -1514,77 +1511,82 @@ class Processor:
 
     # --- END: POST-PROCESSING ANALYSIS FUNCTIONS ---
 
-    def run(self):
-        start_time = time.time()
-        # --- Load master offsets once at the start ---
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-        if os.path.exists(MASTER_OFFSET_FILE):
-            print(f"Found existing master offsets file at: {MASTER_OFFSET_FILE}")
-            master_offsets_df = pd.read_csv(MASTER_OFFSET_FILE)
-        else:
-            print("No master_offsets.csv found. Will create a new one.")
-            master_offsets_df = pd.DataFrame(
-                columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
-                         'tile_name'])
-
-        csv_files = [os.path.join(self.csb_directory, f) for f in os.listdir(self.csb_directory) if f.endswith('.csv')]
-        for csb_file in csv_files:
-            self.title = os.path.splitext(os.path.basename(csb_file))[0]
-            # We check for a final product to determine if we should skip
-            final_product_check = os.path.join(self.output_dir, "final_products", "csb_final_gridded.tif")
-            if os.path.exists(final_product_check):
-                print(f"Skipping already processed file based on existing final products: {self.title}")
-                continue
-
-            print(f"Processing {csb_file} with title: {self.title}")
-            try:
-                modeling_dir_path = os.path.join(self.output_dir, "Modeling")
-                try:
-                    shutil.rmtree(modeling_dir_path)
-                except FileNotFoundError:
-                    pass  # It's ok if it doesn't exist
-                except Exception as e:
-                    print(f"Error deleting old Modeling folder: {e}")
-
-                if self.use_bluetopo:
-                    bag_file = self.create_convex_hull_and_download_tiles(csb_file,
-                                                                          self.output_dir,
-                                                                          self.title,
-                                                                          self.bag_file_path,
-                                                                          use_bluetopo=True)
-                else:
-                    bag_file = self.bag_file_path
-
-                # ---Pass the master_offsets_df to rasterize_CSB ---
-                self.rasterize_csb(csb_file, bag_file, master_offsets_df)
-
-            except Exception as e:
-                tb.print_exception(e)
-                raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
-            finally:
-                self.cleanup_interim_files()
-
-        if self.run_analysis:
-            print("\n***** Starting Post-Processing Analysis *****")
-            db_path = os.path.join(self.output_dir, "csb.duckdb")
-            hist_export_dir = os.path.join(self.output_dir, "histograms")
-            exports_folder = os.path.join(self.output_dir, "transit_exports")
-
-            if not os.path.exists(db_path):
-                print(f"Error: DuckDB file not found at {db_path}. Cannot run analysis.")
+    def run(self, *,
+            clean_tmp_on_exit: bool = True):
+        try:
+            start_time = time.time()
+            # --- Load master offsets once at the start ---
+            master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
+            if master_offset_file.exists():
+                print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
+                master_offsets_df = pd.read_csv(master_offset_file.open())
             else:
-                self.run_histograms_calibration_points(db_path, hist_export_dir)
-                self.run_apply_best_offsets(db_path)
-                self.run_export_transits(db_path, exports_folder)  # This now checks internally if it should run
+                print("No master_offsets.csv found. Will create a new one.")
+                master_offsets_df = pd.DataFrame(
+                    columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
+                             'tile_name'])
 
-        if self.run_final_grid:
-            self.run_final_gridding_and_export()
+            final_products: io.StorageLocation = self.output_dir.sub_location('final_products')
 
-        end_time = time.time()
-        duration = end_time - start_time
-        minutes, seconds = divmod(duration, 60)
-        print(f"***** ALL STAGES DONE! Total processing time: {int(minutes)} minutes and {seconds:.1f} seconds")
-        print("processing complete.")
-        if self.clean_up_callback:
-            print("calling clean-up callback")
-            self.clean_up_callback()
+            # csv_files = [os.path.join(self.csb_directory, f) for f in os.listdir(self.csb_directory) if f.endswith('.csv')]
+            for csb_file in self.csb_directory.list_files(suffix='.csv'):
+                title = csb_file.get_stem()
+                # We check for a final product to determine if we should skip
+                # final_product_check = os.path.join(self.output_dir, "final_products", "csb_final_gridded.tif")
+                if final_products.contains('csb_final_gridded.tif'):
+                    print(f"Skipping already processed file based on existing final products: {title}")
+                    continue
+
+                print(f"Processing {csb_file.get_uri()} with title: {title}")
+                try:
+                    self.output_dir.delete_all('Modeling')
+                    # modeling_dir_path = os.path.join(self.output_dir, "Modeling")
+                    # try:
+                    #     shutil.rmtree(modeling_dir_path)
+                    # except FileNotFoundError:
+                    #     pass  # It's ok if it doesn't exist
+                    # except Exception as e:
+                    #     print(f"Error deleting old Modeling folder: {e}")
+
+                    if self.use_bluetopo:
+                        bag_file = self.create_convex_hull_and_download_tiles(csb_file,
+                                                                              title)
+                    else:
+                        bag_file = self.bag_file_path
+
+                    # ---Pass the master_offsets_df to rasterize_CSB ---
+                    self.rasterize_csb(csb_file, bag_file, master_offsets_df)
+
+                except Exception as e:
+                    tb.print_exception(e)
+                    raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
+                finally:
+                    self.cleanup_interim_files()
+
+            if self.run_analysis:
+                print("\n***** Starting Post-Processing Analysis *****")
+                db_path = os.path.join(self.output_dir, "csb.duckdb")
+                hist_export_dir = os.path.join(self.output_dir, "histograms")
+                exports_folder = os.path.join(self.output_dir, "transit_exports")
+
+                if not os.path.exists(db_path):
+                    print(f"Error: DuckDB file not found at {db_path}. Cannot run analysis.")
+                else:
+                    self.run_histograms_calibration_points(db_path, hist_export_dir)
+                    self.run_apply_best_offsets(db_path)
+                    self.run_export_transits(db_path, exports_folder)  # This now checks internally if it should run
+
+            if self.run_final_grid:
+                self.run_final_gridding_and_export()
+
+            end_time = time.time()
+            duration = end_time - start_time
+            minutes, seconds = divmod(duration, 60)
+            print(f"***** ALL STAGES DONE! Total processing time: {int(minutes)} minutes and {seconds:.1f} seconds")
+            print("processing complete.")
+            if self.clean_up_callback:
+                print("calling clean-up callback")
+                self.clean_up_callback()
+        finally:
+            if clean_tmp_on_exit:
+                shutil.rmtree(self.tmp_dir)

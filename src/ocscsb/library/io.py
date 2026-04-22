@@ -4,6 +4,8 @@ import datetime
 import time
 from contextlib import contextmanager
 from enum import Enum
+from typing import cast
+import shutil
 
 from smart_open import open as sopen
 
@@ -14,6 +16,7 @@ from ocscsb.library.cloud import aws
 
 # 72-hours TTL
 DEFAULT_TTL_SEC = 259_200
+ALWAYS_EXISTS_TTL = -1
 
 
 class StorageProvider(ABC):
@@ -40,7 +43,7 @@ class StorageProvider(ABC):
 
     def object_exists(self, object_name: str,
                       *,
-                      ttl_sec: int = DEFAULT_TTL_SEC,
+                      ttl_sec: int = ALWAYS_EXISTS_TTL,
                       sub_path: str | None = None) -> bool:
         """
         Test if `object_name` exists and is newer than TTL seconds old
@@ -48,7 +51,8 @@ class StorageProvider(ABC):
         ----------
         object_name
         ttl_sec : int
-            Max age, at which, object is considered to be stale and therefore non-existent. Default 259,200 (72-hours)
+            Max age, at which, the object is considered to be stale and therefore non-existent.
+            Default ALWAYS_EXISTS_TTL, which forces a strict existence test, regardless of object age.
         sub_path
 
         Returns
@@ -109,10 +113,13 @@ class StorageProviderFile(StorageProvider):
                       *,
                       ttl_sec: int = DEFAULT_TTL_SEC,
                       sub_path: str | None = None) -> bool:
-        object_path: Path = self.generate_resource_uri(object_name, sub_path=sub_path)
+        object_path: Path = cast(Path, self.generate_resource_uri(object_name, sub_path=sub_path))
         if not object_path.exists():
             return False
-        # File exists, check its modification time to see if it is older than TTL
+        if ttl_sec == ALWAYS_EXISTS_TTL:
+            return True
+        # File exists, check its modification time to see if it is older than TTL, if so, file is
+        # considered not to exist.
         curr_time = time.time()
         stat = object_path.stat()
         return stat.st_mtime > (curr_time - ttl_sec)
@@ -145,7 +152,6 @@ class StorageProviderFile(StorageProvider):
         if sub_path is not None:
             target_path = target_path / sub_path
         if target_path.exists() and target_path.is_dir():
-            import shutil
             shutil.rmtree(target_path)
             return True
         return False
@@ -179,6 +185,8 @@ class StorageProviderS3(StorageProvider):
                 Bucket=self.location,
                 Key=object_path
             )
+            if ttl_sec == ALWAYS_EXISTS_TTL:
+                return True
             mtime = response['LastModified']
             curr_time = datetime.datetime.now(mtime.tzinfo)
             dt = datetime.timedelta(seconds=ttl_sec)
@@ -290,7 +298,7 @@ class File:
         return cls(location_str, object_name, storage_provider)
 
     def exists(self, *,
-               ttl_sec: int = DEFAULT_TTL_SEC):
+               ttl_sec: int = ALWAYS_EXISTS_TTL):
         return self.storage_provider.object_exists(self.object_name, ttl_sec=ttl_sec)
 
     @contextmanager
@@ -306,6 +314,9 @@ class File:
     def get_uri(self) -> str:
         return str(self.storage_provider.generate_resource_uri(self.object_name))
 
+    def get_stem(self) -> str:
+        return Path(self.object_name).stem
+
     def delete(self) -> bool:
         return self.storage_provider.delete_object(self.object_name)
 
@@ -316,6 +327,7 @@ class StorageLocation:
         self.location = str(location)
         if isinstance(provider, str):
             provider = StorageProviderType[provider.upper()]
+        self.provider_type: StorageProviderType = provider
         match provider:
             case StorageProviderType.LOCAL_FILE:
                 self.storage_provider: StorageProvider = StorageProviderFile(self.location)
@@ -331,20 +343,19 @@ class StorageLocation:
 
     def contains(self, object_name: str,
                  *,
-                 ttl_sec: int = DEFAULT_TTL_SEC,
+                 ttl_sec: int = ALWAYS_EXISTS_TTL,
                  sub_path: str | None = None) -> bool:
         return self.storage_provider.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
 
     def list_files(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
         File]:
         names = self.storage_provider.list_objects(prefix=prefix, suffix=suffix, sub_path=sub_path)
-        # Handle sub_path in File object name?
-        # Actually io.File seems to take object_name as relative to location
         files = []
         for name in names:
-            obj_name = name
             if sub_path:
                 obj_name = f"{sub_path}/{name}"
+            else:
+                obj_name = name
             files.append(File(self.location, obj_name, self.storage_provider))
         return files
 
@@ -353,6 +364,9 @@ class StorageLocation:
 
     def delete_all(self, sub_path: str | None = None) -> bool:
         return self.storage_provider.delete_all(sub_path=sub_path)
+
+    def sub_location(self, sub_location: str) -> 'StorageLocation':
+        return StorageLocation(f"{self.location}/{sub_location}", self.provider_type)
 
     def get_uri(self, object_name: str | None = None, sub_path: str | None = None) -> str:
         if object_name is None:

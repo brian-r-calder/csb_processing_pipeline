@@ -36,7 +36,8 @@ def dummy_s3_object(s3_client):
 def test_local_file_object_exists(temp_path, dummy_file):
     file_abs: str = os.path.join(temp_path, DUMMY_FILE_NAME)
     dummy_file: io.File = io.File.init(file_abs)
-    assert not dummy_file.exists()
+    assert dummy_file.exists()
+    assert not dummy_file.exists(ttl_sec=io.DEFAULT_TTL_SEC)
     assert dummy_file.exists(ttl_sec=8 * 86_400)
     with dummy_file.open() as f:
         line = f.readline()
@@ -93,6 +94,11 @@ def test_local_list_objects(temp_path):
     assert "test2.txt" in names
     assert "other.dat" in names
     assert len(names) == 3
+
+    # Verify stem
+    expected_stems = ['test1', 'test2', 'other']
+    for i, f in enumerate(files):
+        assert f.get_stem() == expected_stems[i]
 
     # List with suffix
     files = location.list_files(suffix=".txt")
@@ -165,6 +171,11 @@ def test_s3_list_objects(s3_client):
     assert "other.dat" in names
     assert "sub/sub1.txt" in names
     assert len(names) == 4
+
+    # Verify stem
+    expected_stems = ['test1', 'test2', 'other', 'sub1']
+    for i, f in enumerate(files):
+        assert f.get_stem() == f.object_name.split('/')[-1].split('.')[-2]
 
     # List with suffix
     files = location.list_files(suffix=".txt")
