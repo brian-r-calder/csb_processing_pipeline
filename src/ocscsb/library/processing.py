@@ -43,6 +43,7 @@ from ocscsb.library import bluetopo, io
 
 GDAL_VSI_PREFIX: str = '/vsis3/'
 S3_PATH_SEP: str = '/'
+FINAL_PROD_DIR = 'final_products'
 
 # def setup_logging(output_dir):
 #     """Configures logging to print to both console and a file."""
@@ -147,6 +148,9 @@ class Processor:
         if fes_yaml_path and fes_yaml_path != '':
             self.fes_yaml_path = io.StorageLocation(fes_yaml_path, provider=provider)
 
+        self.master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
+        self.master_offsets: pd.DataFrame = self.read_master_offsets()
+
         self.duckdb_path: Path = self.tmp_dir / 'csb.duckdb'
 
         self.run_analysis = run_analysis
@@ -205,8 +209,8 @@ class Processor:
         return gdf
 
     def create_convex_hull_and_download_tiles(self,
-                                              csb_file: io.File,
-                                              title: str) -> io.File:
+                                              title: str,
+                                              csb_file: io.File) -> io.File:
         """
         Loads CSB data, builds a convex hull, and writes it to a shapefile.
         As part of doing so, creates a dedicated Modeling folder,
@@ -246,12 +250,11 @@ class Processor:
 
         return io.File.from_path(vrt_path)
 
-    def read_master_offsets(self):
-        """Reads the master offsets from a CSV file."""
-        master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
-        if master_offset_file.exists():
-            print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
-            return pd.read_csv(master_offset_file.open())
+    def read_master_offsets(self) -> pd.DataFrame:
+        """Reads the master offsets from a CSV file stored at `self.master_offset_file`."""
+        if self.master_offset_file.exists():
+            print(f"Found existing master offsets file at: {self.master_offset_file.get_uri()}")
+            return pd.read_csv(self.master_offset_file.open())
         else:
             print("No master_offsets.csv found. Will create a new one.")
             return pd.DataFrame(
@@ -259,15 +262,12 @@ class Processor:
                          'tile_name'])
 
     def update_master_offsets(self,
+                              title: str,
                               unique_id, platform_name, new_offset, std_dev, date_range):
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-        master_offsets = self.read_master_offsets()
-
-
         accuracy_score = 1 / std_dev if std_dev != 0 else 0
 
         #print('checking for existing offset by unique_id and platform_name')
-        existing_index = master_offsets[(master_offsets['unique_id'] == unique_id)].index
+        existing_index = self.master_offsets[(self.master_offsets['unique_id'] == unique_id)].index
 
         new_row = pd.DataFrame([{
             'unique_id': unique_id,
@@ -276,21 +276,20 @@ class Processor:
             'std_dev': std_dev,
             'accuracy_score': accuracy_score,
             'date_range': date_range,
-            'tile_name': self.title
+            'tile_name': title
         }])
 
         # Exclude empty or all-NA entries before concatenation
         new_row = new_row.dropna(how='all')
 
         if existing_index.empty:
-            master_offsets = pd.concat([master_offsets, new_row], ignore_index=True)
+            self.master_offsets = pd.concat([self.master_offsets, new_row], ignore_index=True)
         else:
-            if master_offsets.loc[existing_index[0], 'accuracy_score'] <= accuracy_score:
-                master_offsets.loc[existing_index[0], list(new_row.columns)] = new_row.iloc[0]
+            if self.master_offsets.loc[existing_index[0], 'accuracy_score'] <= accuracy_score:
+                self.master_offsets.loc[existing_index[0], list(new_row.columns)] = new_row.iloc[0]
 
         try:
-            master_offsets.to_csv(MASTER_OFFSET_FILE, index=False)
-            #print(f"Master offsets updated successfully in {MASTER_OFFSET_FILE}.")
+            self.master_offsets.to_csv(self.master_offset_file.open(mode='w'), index=False)
         except Exception as e:
             print(f"Failed to update master offsets: {e}")
 
@@ -652,13 +651,12 @@ class Processor:
     def derive_draft(self,
                      title: str,
                      csb_file: io.File,
-                     bag_file: io.File,
-                     master_offsets_df: pd.DataFrame, *,
+                     bag_file: io.File, *,
                      report=None) -> pd.DataFrame:
         output_raster, raster_boundary_shp = self.extract_bag(title, bag_file)
         csb_corr: pd.DataFrame = self.tides(csb_file)
 
-        vessels_with_offsets = master_offsets_df['unique_id'].unique().tolist()
+        vessels_with_offsets = self.master_offsets['unique_id'].unique().tolist()
         if report:
             report.add_statistic("Vessels with existing offsets", len(vessels_with_offsets))
 
@@ -734,7 +732,8 @@ class Processor:
                 out.loc[:, 'count'] = out['count'].fillna(0)
                 out.loc[(out['mean'] > 3) | (out['mean'] < -11), ['mean', 'std', 'count']] = [0, 999, 0]
                 out.loc[(out['std'] > 7), ['mean', 'std', 'count']] = [0, 999, 0]
-                out.to_csv(os.path.join(self.output_dir, 'VESSEL_OFFSETS_csb_corr_' + self.title + '.csv'), mode='a')
+                vessel_offsets_file: io.File = self.output_dir.new_file(f"VESSEL_OFFSETS_csb_corr_{title}.csv")
+                out.to_csv(vessel_offsets_file.open(mode='a'))
 
                 platform_mapping = filtered_csb_corr[['unique_id', 'platform_name']].drop_duplicates()
                 out_with_platform = out.merge(platform_mapping, on='unique_id', how='left')
@@ -748,7 +747,7 @@ class Processor:
                     new_offset = row['mean']
                     std_dev = row['std']
                     date_range = date_ranges.get(unique_id, ("19700101", "19700101"))
-                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, self.title)
+                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, title)
             except Exception as e:
                 print(f"Unexpected error encountered creating aggregation dataframe: {e}")
 
@@ -821,14 +820,13 @@ class Processor:
     def draft_corr(self,
                    title: str,
                    csb_file: io.File,
-                   bag_file: io.File,
-                   master_offsets_df: pd.DataFrame) -> gpd.GeoDataFrame:
-        csb_corr: pd.DataFrame = self.derive_draft(title, csb_file, bag_file, master_offsets_df)
+                   bag_file: io.File) -> gpd.GeoDataFrame:
+        csb_corr: pd.DataFrame = self.derive_draft(title, csb_file, bag_file)
 
         # Merge the CSB data with the master offsets based on unique vessel ID
         # This will now include any newly derived offsets from the step above
-        master_offsets_updated = self.read_master_offsets()  # Read the potentially updated file
-        csb_corr1 = csb_corr.merge(master_offsets_updated, on='unique_id', how='left')
+        # master_offsets_updated = self.read_master_offsets()  # Read the potentially updated file
+        csb_corr1 = csb_corr.merge(self.master_offsets, on='unique_id', how='left')
 
         # Apply the offset correction
         # Fill missing offsets with 0 so the calculation doesn't fail
@@ -847,9 +845,8 @@ class Processor:
     def rasterize_csb(self,
                       title: str,
                       csb_file: io.File,
-                      bag_file: io.File,
-                      master_offsets_df: pd.DataFrame):
-        csb_corr1: gpd.GeoDataFrame = self.draft_corr(title, csb_file, bag_file, master_offsets_df)
+                      bag_file: io.File):
+        csb_corr1: gpd.GeoDataFrame = self.draft_corr(title, csb_file, bag_file)
 
         # Insert processed data into DuckDB.
         if self.insert_duckdb:
@@ -857,10 +854,11 @@ class Processor:
 
         # Optionally export as geopackage if the checkbox is selected.
         if self.export_gp:
-            gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
+            # gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
+            gpkg_path: io.File = self.output_dir.new_file(f"csb_processed_{title}.gpkg")
             print('*****Exporting processed CSB data to geopackage*****')
-            csb_corr1.to_file(gpkg_path, driver='GPKG', layer='csb')
-            print(f"Geopackage exported to {gpkg_path}")
+            csb_corr1.to_file(gpkg_path.open(mode='w'), driver='GPKG', layer='csb')
+            print(f"Geopackage exported to {gpkg_path.get_uri()}")
 
         return csb_corr1
 
@@ -874,9 +872,9 @@ class Processor:
         if gdf.crs is None:
             raise ValueError("GeoDataFrame has no CRS. Please set or reproject first.")
 
-        # --- Safety Check: Ensure the output directory exists before writing ---
-        output_dir = os.path.dirname(out_raster_path)
-        os.makedirs(output_dir, exist_ok=True)
+        # # --- Safety Check: Ensure the output directory exists before writing ---
+        # output_dir = os.path.dirname(out_raster_path)
+        # os.makedirs(output_dir, exist_ok=True)
 
         x_min, y_min, x_max, y_max = gdf.total_bounds
         width = int(np.ceil((x_max - x_min) / resolution))
@@ -911,7 +909,7 @@ class Processor:
         avg_array[valid_mask] = sum_array[valid_mask] / count_array[valid_mask]
 
         with rasterio.open(
-                out_raster_path, 'w', driver='GTiff',
+                out_raster_path.open(mode='w'), driver='GTiff',
                 height=height, width=width, count=1,
                 dtype=np.float32, crs=gdf.crs.to_string(),
                 transform=transform, nodata=nodata,
@@ -986,8 +984,8 @@ class Processor:
         Main function for the final gridding and export stage.
         """
         print("\n***** Starting Final Gridding & Export Stage *****")
-        output_folder = os.path.join(self.output_dir, "final_products")
-        os.makedirs(output_folder, exist_ok=True)
+        # output_folder = os.path.join(self.output_dir, "final_products")
+        # os.makedirs(output_folder, exist_ok=True)
         with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
             if self.tessellation_shp is not None and os.path.exists(self.tessellation_shp):
                 print(f"Using tessellation scheme: {self.tessellation_shp}")
@@ -1029,9 +1027,10 @@ class Processor:
                         continue
 
                     if self.export_final_gpkg:
-                        gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
+                        # gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
+                        gpkg_path: io.File = self.output_dir.new_file(f"{FINAL_PROD_DIR}/{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
-                        points_gdf_4326.to_file(gpkg_path, driver="GPKG")
+                        points_gdf_4326.to_file(gpkg_path.open(mode='w'), driver="GPKG")
                         print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path}")
 
                     lat_c, lon_c = poly_geom.centroid.y, poly_geom.centroid.x
@@ -1045,7 +1044,8 @@ class Processor:
                         print(f"  Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                         if not points_for_raster.empty:
-                            tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
+                            # tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
+                            tif_path: io.File = self.output_dir.new_file(f"{FINAL_PROD_DIR}/{polygon_id}_gridded.tif")
                             self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     except ValueError as e:
                         print(f"  Skipping raster for {polygon_id}: {e}")
@@ -1563,14 +1563,13 @@ class Processor:
                     #     print(f"Error deleting old Modeling folder: {e}")
 
                     if self.use_bluetopo:
-                        bag_file: io.File = self.create_convex_hull_and_download_tiles(csb_file, title)
+                        bag_file: io.File = self.create_convex_hull_and_download_tiles(title, csb_file)
                     elif self.bag_file_path:
                         bag_file: io.File = self.bag_file_path
                     else:
                         raise Exception(f"Neither bag_file_path nor use_bluetopo where set when one must be.")
 
-                    # Pass the master_offsets_df to rasterize_CSB
-                    self.rasterize_csb(title, csb_file, bag_file, master_offsets_df)
+                    self.rasterize_csb(title, csb_file, bag_file)
                 except Exception as e:
                     tb.print_exception(e)
                     raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
@@ -1585,9 +1584,9 @@ class Processor:
                 if not self.duckdb_path.exists():
                     print(f"Error: DuckDB file not found at {str(self.duckdb_path)}. Cannot run analysis.")
                 else:
-                    self.run_histograms_calibration_points(db_path, hist_export_dir)
-                    self.run_apply_best_offsets(db_path)
-                    self.run_export_transits(db_path, exports_folder)  # This now checks internally if it should run
+                    self.run_histograms_calibration_points(self.duckdb_path, hist_export_dir)
+                    self.run_apply_best_offsets(self.duckdb_path)
+                    self.run_export_transits(self.duckdb_path, exports_folder)  # This now checks internally if it should run
 
             if self.run_final_grid:
                 self.run_final_gridding_and_export()

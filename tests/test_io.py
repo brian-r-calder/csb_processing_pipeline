@@ -60,6 +60,17 @@ def test_local_file_write(temp_path):
     with new_file.open() as f_in:
         assert HELLO_WORLD == f_in.readline()
 
+def test_local_file_write_subdir(temp_path):
+    # Make sure parent directory preparation works
+    location: io.StorageLocation = io.StorageLocation(temp_path, 'LOCAL_FILE')
+    fpath_rel = 'newsubdir/file.txt'
+    file: io.File = location.new_file(fpath_rel)
+    assert not file.exists()
+    with file.open(mode='w') as f:
+        f.writelines(HELLO_WORLD)
+    with file.open() as f:
+        assert HELLO_WORLD == f.readline()
+
 def test_s3_object_exists(dummy_s3_object, s3_client):
     # Sleep for 1 second so that our TTL 1 second case passes as expected.
     time.sleep(1)
@@ -82,6 +93,18 @@ def test_s3_write(s3_client):
         f_out.writelines(HELLO_WORLD)
     with new_file.open() as f_in:
         assert HELLO_WORLD == f_in.readline()
+
+def test_s3_write_subdir(s3_client):
+    # Make sure parent directory preparation works
+    location: io.StorageLocation = io.StorageLocation(s3_client['bucket'], 'S3',
+                                                      client=s3_client['client'])
+    fpath_rel = 'newsubdir/file.txt'
+    file: io.File = location.new_file(fpath_rel)
+    assert not file.exists()
+    with file.open(mode='w') as f:
+        f.writelines(HELLO_WORLD)
+    with file.open() as f:
+        assert HELLO_WORLD == f.readline()
 
 def test_local_list_objects(temp_path):
     # Create some files

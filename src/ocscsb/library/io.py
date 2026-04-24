@@ -20,6 +20,9 @@ ALWAYS_EXISTS_TTL = -1
 
 
 class StorageProvider(ABC):
+    class ObjectStateError(Exception):
+        ...
+
     def __init__(self, location: str):
         self.location = location
 
@@ -82,9 +85,28 @@ class StorageProvider(ABC):
         """
         ...
 
-    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+    def _prepare_open(self, object_name: str):
+        """
+        Prepare underlying storage for opening object `object_name`. This could mean,
+        for example, making sure intermediate directories between `object_name` and
+        `self.location` exist.
+
+        Parameters
+        ----------
+        object_name
+
+        Raises
+        -------
+        StorageProvider.ObjectStateError if preparation for opening failed.
+
+        """
+        ...
+
+    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None,
+             **kwargs):
         """
         Open `object_name` for reading for writing.
+
         Parameters
         ----------
         object_name
@@ -93,13 +115,20 @@ class StorageProvider(ABC):
         encoding
         errors
         newline
+        kwargs
 
         Returns
         -------
         A file-like object that can be read from or written to.
+
+        Raises
+        ------
+        StorageProvider.ObjectStateError if the file cannot be opened.
         """
+        self._prepare_open(object_name)
         return sopen(self.generate_resource_uri(object_name=object_name),
-                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline)
+                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
+                     **kwargs)
 
     def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
         str]:
@@ -149,6 +178,16 @@ class StorageProviderFile(StorageProvider):
         curr_time = time.time()
         stat = object_path.stat()
         return stat.st_mtime > (curr_time - ttl_sec)
+
+    def _prepare_open(self, object_name: str):
+        object_path: Path = cast(Path, self.generate_resource_uri(object_name=object_name))
+        object_parent: Path = object_path.parent
+        if object_parent.exists():
+            if not object_parent.is_dir():
+                raise StorageProvider.ObjectStateError(f"Parent {str(object_parent)} "
+                                                       f"of object to open {str(object_path)} is not a directory.")
+        else:
+            object_parent.mkdir(parents=True, exist_ok=True)
 
     def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
         str]:
@@ -232,10 +271,21 @@ class StorageProviderS3(StorageProvider):
                 return False
             raise e
 
-    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
-        return sopen(self.generate_resource_uri(object_name=object_name),
-                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
-                     transport_params={'client': self._client})
+    def _prepare_open(self, object_name: str):
+        try:
+            response = self._client.head_bucket(Bucket=self.location)
+            resp_meta = response.get('ResponseMetadata', {})
+            if 'HTTPStatusCode' not in resp_meta or resp_meta['HTTPStatusCode'] != 200:
+                raise StorageProvider.ObjectStateError(f"Bucket {self.location} to store object {object_name} in "
+                                                       "does not exist.")
+        except botocore.exceptions.ClientError as e:
+            raise StorageProvider.ObjectStateError(f"Unable to determine if bucket {self.location} "
+                                                   f"to store object {object_name} in exists due to error: {str(e)}")
+
+    def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None,
+             **kwargs):
+        return super().open(object_name, mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
+                     transport_params={'client': self._client}, **kwargs)
 
     def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
         str]:
