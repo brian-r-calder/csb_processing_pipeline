@@ -133,6 +133,7 @@ class Processor:
             self.bag_file_path: io.File = io.File.init(bag_file_path, provider=provider)
 
         self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider)
+        self.final_products_loc: io.StorageLocation = self.output_dir.sub_location('final_products')
 
         if fp_zones is None or fp_zones == '':
             fp_zone_path: str = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
@@ -863,7 +864,11 @@ class Processor:
         return csb_corr1
 
     # --- START: FINAL GRIDDING AND EXPORT FUNCTIONS ---
-    def points_to_raster_average(self, gdf, out_raster_path, value_col='depth', nodata=1000000):
+    def points_to_raster_average(self,
+                                 gdf: gpd.GeoDataFrame,
+                                 out_raster_path: io.File,
+                                 value_col: str = 'depth',
+                                 nodata: int = 1000000):
         """
         Creates a GeoTIFF by averaging point values within each grid cell.
         -- MODIFIED for ROBUSTNESS --
@@ -881,7 +886,7 @@ class Processor:
         height = int(np.ceil((y_max - y_min) / resolution))
 
         if width <= 0 or height <= 0:
-            print(f"Warning: Raster dimensions are zero or negative for {os.path.basename(out_raster_path)}. Skipping.")
+            print(f"Warning: Raster dimensions are zero or negative for {out_raster_path.object_name}. Skipping.")
             return
 
         transform = from_origin(x_min, y_max, resolution, resolution)
@@ -919,7 +924,7 @@ class Processor:
 
         print(f"Final gridded GeoTIFF created at {out_raster_path}")
 
-    def organize_by_epsg(self, input_dir):
+    def organize_by_epsg(self, input_dir: io.StorageLocation):
         """
         Moves TIFF files into subdirectories named by their EPSG code.
         """
@@ -1028,7 +1033,7 @@ class Processor:
 
                     if self.export_final_gpkg:
                         # gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
-                        gpkg_path: io.File = self.output_dir.new_file(f"{FINAL_PROD_DIR}/{polygon_id}_points.gpkg")
+                        gpkg_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
                         points_gdf_4326.to_file(gpkg_path.open(mode='w'), driver="GPKG")
                         print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path}")
@@ -1045,7 +1050,7 @@ class Processor:
 
                         if not points_for_raster.empty:
                             # tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
-                            tif_path: io.File = self.output_dir.new_file(f"{FINAL_PROD_DIR}/{polygon_id}_gridded.tif")
+                            tif_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_gridded.tif")
                             self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     except ValueError as e:
                         print(f"  Skipping raster for {polygon_id}: {e}")
@@ -1082,10 +1087,11 @@ class Processor:
                 )
 
                 if self.export_final_gpkg:
-                    gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
+                    # gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
+                    gpkg_path: io.File = self.final_products_loc.new_file('csb_final_points.gpkg')
                     print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
-                    points_gdf_4326.to_file(gpkg_path, driver="GPKG")
-                    print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path}")
+                    points_gdf_4326.to_file(gpkg_path.open(mode='w'), driver="GPKG")
+                    print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                 try:
                     world_centroid = points_gdf_4326.unary_union.centroid
@@ -1099,7 +1105,8 @@ class Processor:
                     print(f"Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                     if not points_for_raster.empty:
-                        tif_path = os.path.join(output_folder, "csb_final_gridded.tif")
+                        # tif_path = os.path.join(output_folder, "csb_final_gridded.tif")
+                        tif_path: io.File = self.final_products_loc.new_file('csb_final_gridded.tif')
                         self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     else:
                         print("No valid non-outlier points to create final raster.")
@@ -1108,8 +1115,8 @@ class Processor:
                     print(f"Could not process single file output: {e}")
 
         if self.organize_vrt:
-            self.organize_by_epsg(output_folder)
-            self.create_vrts_for_epsg_folders(output_folder)
+            self.organize_by_epsg(self.final_products_loc)
+            self.create_vrts_for_epsg_folders(self.final_products_loc)
 
         print("***** Final Gridding & Export Stage Complete *****")
 
