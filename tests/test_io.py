@@ -112,9 +112,10 @@ def test_local_list_objects(temp_path):
     (temp_path / "TEST2.TIF").write_text("content2")
     (temp_path / "other.dat").write_text("other")
 
-    sub = temp_path / "sub"
+    sub = temp_path / "EPSG_32619"
     sub.mkdir()
     (sub / "sub1.txt").write_text("subcontent")
+    (sub / "sub2.tiff").write_text("subcontent")
 
     location = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
 
@@ -141,11 +142,21 @@ def test_local_list_objects(temp_path):
     assert "other.dat" not in names
     assert len(names) == 2
 
-    # List sub_path
-    files = location.list_files(sub_path="sub")
+    # List with prefix and suffix
+    files = location.list_files(prefix='EPSG_*/', suffix='.tif*')
+    assert len(files) == 1
     names = [f.object_name for f in files]
-    assert "sub/sub1.txt" in names
-    assert len(names) == 1
+    assert "EPSG_32619/sub1.txt" not in names
+    assert "EPSG_32619/sub2.tiff" in names
+
+
+    # List sub_path
+    files = location.list_files(sub_path="EPSG_32619")
+    names = [f.object_name for f in files]
+    assert "EPSG_32619/sub1.txt" in names
+    assert "EPSG_32619/sub2.tiff" in names
+    assert len(names) == 2
+
 
 def test_local_move(temp_path):
     src: io.StorageLocation = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
@@ -220,7 +231,8 @@ def test_s3_list_objects(s3_client):
     client.put_object(Bucket=bucket, Key="test1.tiff", Body=b"content1")
     client.put_object(Bucket=bucket, Key="TEST2.TIF", Body=b"content2")
     client.put_object(Bucket=bucket, Key="other.dat", Body=b"other")
-    client.put_object(Bucket=bucket, Key="sub/sub1.txt", Body=b"subcontent")
+    client.put_object(Bucket=bucket, Key="EPSG_32619/sub1.txt", Body=b"subcontent")
+    client.put_object(Bucket=bucket, Key="EPSG_32619/sub2.tiff", Body=b"subcontent")
 
     location = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
 
@@ -230,8 +242,9 @@ def test_s3_list_objects(s3_client):
     assert "test1.tiff" in names
     assert "TEST2.TIF" in names
     assert "other.dat" in names
-    assert "sub/sub1.txt" in names
-    assert len(names) == 4
+    assert "EPSG_32619/sub1.txt" in names
+    assert "EPSG_32619/sub2.tiff" in names
+    assert len(names) == 5
 
     # Verify stem
     for i, f in enumerate(files):
@@ -243,15 +256,24 @@ def test_s3_list_objects(s3_client):
     names = [f.object_name for f in files]
     assert "test1.tiff" in names
     assert "TEST2.TIF" in names
-    assert "sub/sub1.txt" not in names
+    assert "EPSG_32619/sub1.txt" not in names
+    assert "EPSG_32619/sub2.tiff" in names
     assert "other.dat" not in names
-    assert len(names) == 2
+    assert len(names) == 3
+
+    # List with prefix and suffix
+    files = location.list_files(prefix='EPSG_*/', suffix='.tif*')
+    assert len(files) == 1
+    names = [f.object_name for f in files]
+    assert "EPSG_32619/sub1.txt" not in names
+    assert "EPSG_32619/sub2.tiff" in names
 
     # List sub_path
-    files = location.list_files(sub_path="sub")
+    files = location.list_files(sub_path="EPSG_32619")
     names = [f.object_name for f in files]
-    assert "sub/sub1.txt" in names
-    assert len(names) == 1
+    assert "EPSG_32619/sub1.txt" in names
+    assert "EPSG_32619/sub2.tiff" in names
+    assert len(names) == 2
 
 def test_s3_move(s3_client):
     client = s3_client['client']

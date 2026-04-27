@@ -951,7 +951,7 @@ class Processor:
             fn.move(out_folder)
             print(f"Moved {fn.get_uri()} → {out_folder.get_uri()}")
 
-    def create_vrts_for_epsg_folders(self, base_dir):
+    def create_vrts_for_epsg_folders(self, base_dir: io.StorageLocation):
         """
         Scans for 'EPSG_' subfolders and builds a VRT for the TIFFs in each.
         """

@@ -202,13 +202,15 @@ class StorageProviderFile(StorageProvider):
         if not search_path.exists():
             return []
 
-        pattern = "*"
+        pattern: str = ''
         if prefix:
-            pattern = f"{prefix}{pattern}"
+            pattern = f"{prefix}"
         if suffix:
-            pattern = f"{pattern}{suffix}"
+            pattern = f"{pattern}*{suffix}"
+        if pattern == '':
+            pattern = '*'
 
-        return [p.name for p in search_path.glob(pattern, case_sensitive=False) if p.is_file()]
+        return [str(p.relative_to(search_path)) for p in search_path.glob(pattern, case_sensitive=False) if p.is_file()]
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         object_path = self.generate_resource_uri(object_name=object_name, sub_path=sub_path)
@@ -297,17 +299,20 @@ class StorageProviderS3(StorageProvider):
                      suffix: str | None = None,
                      sub_path: str | None = None) -> list[str]:
         bucket = self.location
-        full_prefix = ""
+        obj_prefix = ''
         if sub_path:
-            full_prefix = f"{sub_path}/"
-        if prefix:
-            full_prefix = f"{full_prefix}{prefix}"
+            obj_prefix = f"{sub_path}/"
 
+        pattern = None
         if suffix:
-            suffix = f"*{suffix}"
+            pattern = f"*{suffix}"
+            if prefix:
+                pattern = f"{prefix}{pattern}"
+        elif prefix:
+            pattern = f"{prefix}*"
 
         paginator = self._client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=bucket, Prefix=full_prefix)
+        pages = paginator.paginate(Bucket=bucket, Prefix=obj_prefix)
 
         objects = []
         for page in pages:
@@ -319,9 +324,9 @@ class StorageProviderS3(StorageProvider):
                 else:
                     name = key
 
-                if suffix:
+                if pattern:
                     name_path = Path(name)
-                    if not name_path.match(suffix, case_sensitive=False):
+                    if not name_path.match(pattern, case_sensitive=False):
                         continue
                 if name:
                     # Avoid empty strings or directory markers
