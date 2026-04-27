@@ -108,8 +108,8 @@ def test_s3_write_subdir(s3_client):
 
 def test_local_list_objects(temp_path):
     # Create some files
-    (temp_path / "test1.txt").write_text("content1")
-    (temp_path / "test2.txt").write_text("content2")
+    (temp_path / "test1.tiff").write_text("content1")
+    (temp_path / "TEST2.TIF").write_text("content2")
     (temp_path / "other.dat").write_text("other")
 
     sub = temp_path / "sub"
@@ -121,23 +121,23 @@ def test_local_list_objects(temp_path):
     # List all
     files = location.list_files()
     names = [f.object_name for f in files]
-    assert "test1.txt" in names
-    assert "test2.txt" in names
+    assert "test1.tiff" in names
+    assert "TEST2.TIF" in names
     assert "other.dat" in names
     assert len(names) == 3
 
     # Verify stem
-    expected_stems = ['test1', 'test2', 'other']
-    expected_suffixes = ['.txt', '.txt', '.dat']
+    expected_stems = ['TEST2', 'test1', 'other']
+    expected_suffixes = ['.TIF', '.tiff', '.dat']
     for i, f in enumerate(files):
         assert f.get_stem() == expected_stems[i]
         assert f.get_suffix() == expected_suffixes[i]
 
     # List with suffix
-    files = location.list_files(suffix=".txt")
+    files = location.list_files(suffix=".tif*")
     names = [f.object_name for f in files]
-    assert "test1.txt" in names
-    assert "test2.txt" in names
+    assert "test1.tiff" in names
+    assert "TEST2.TIF" in names
     assert "other.dat" not in names
     assert len(names) == 2
 
@@ -202,8 +202,8 @@ def test_s3_list_objects(s3_client):
     bucket = s3_client['bucket']
 
     # Create some objects
-    client.put_object(Bucket=bucket, Key="test1.txt", Body=b"content1")
-    client.put_object(Bucket=bucket, Key="test2.txt", Body=b"content2")
+    client.put_object(Bucket=bucket, Key="test1.tiff", Body=b"content1")
+    client.put_object(Bucket=bucket, Key="TEST2.TIF", Body=b"content2")
     client.put_object(Bucket=bucket, Key="other.dat", Body=b"other")
     client.put_object(Bucket=bucket, Key="sub/sub1.txt", Body=b"subcontent")
 
@@ -212,8 +212,8 @@ def test_s3_list_objects(s3_client):
     # List all
     files = location.list_files()
     names = [f.object_name for f in files]
-    assert "test1.txt" in names
-    assert "test2.txt" in names
+    assert "test1.tiff" in names
+    assert "TEST2.TIF" in names
     assert "other.dat" in names
     assert "sub/sub1.txt" in names
     assert len(names) == 4
@@ -224,13 +224,13 @@ def test_s3_list_objects(s3_client):
         assert f.get_suffix() == f".{f.object_name.split('/')[-1].split('.')[-1]}"
 
     # List with suffix
-    files = location.list_files(suffix=".txt")
+    files = location.list_files(suffix=".tif*")
     names = [f.object_name for f in files]
-    assert "test1.txt" in names
-    assert "test2.txt" in names
-    assert "sub/sub1.txt" in names
+    assert "test1.tiff" in names
+    assert "TEST2.TIF" in names
+    assert "sub/sub1.txt" not in names
     assert "other.dat" not in names
-    assert len(names) == 3
+    assert len(names) == 2
 
     # List sub_path
     files = location.list_files(sub_path="sub")

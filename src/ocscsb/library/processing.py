@@ -929,15 +929,10 @@ class Processor:
         Moves TIFF files into subdirectories named by their EPSG code.
         """
         print("\nOrganizing final GeoTIFFs by EPSG code...")
-        for fn in os.listdir(input_dir):
-            if not fn.lower().endswith(('.tif', '.tiff')):
-                continue
-
-            src_path = os.path.join(input_dir, fn)
-            if not os.path.isfile(src_path): continue
+        for fn in input_dir.list_files(suffix='.tif*'):
 
             try:
-                with rasterio.open(src_path) as src:
+                with rasterio.open(fn.open(mode='r')) as src:
                     epsg = src.crs.to_epsg()
             except Exception as e:
                 print(f"[ERROR] could not open {fn}: {e}")

@@ -2,9 +2,8 @@ from abc import ABC
 from pathlib import Path
 import datetime
 import time
-from contextlib import contextmanager
 from enum import Enum
-from typing import cast
+from typing import cast, Sequence
 import shutil
 
 from smart_open import open as sopen
@@ -130,8 +129,10 @@ class StorageProvider(ABC):
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      **kwargs)
 
-    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
-        str]:
+    def list_objects(self,
+                     prefix: str | None = None,
+                     suffix: str | None = None,
+                     sub_path: str | None = None) -> list[str]:
         """List objects in the storage provider."""
         ...
 
@@ -189,8 +190,9 @@ class StorageProviderFile(StorageProvider):
         else:
             object_parent.mkdir(parents=True, exist_ok=True)
 
-    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
-        str]:
+    def list_objects(self, prefix: str | None = None,
+                     suffix: str | Sequence[str] | None = None,
+                     sub_path: str | None = None) -> list[str]:
         search_path = self.location_path
         if sub_path is not None:
             search_path = search_path / sub_path
@@ -203,7 +205,7 @@ class StorageProviderFile(StorageProvider):
         if suffix:
             pattern = f"{pattern}{suffix}"
 
-        return [p.name for p in search_path.glob(pattern) if p.is_file()]
+        return [p.name for p in search_path.glob(pattern, case_sensitive=False) if p.is_file()]
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         object_path = self.generate_resource_uri(object_name=object_name, sub_path=sub_path)
@@ -287,14 +289,19 @@ class StorageProviderS3(StorageProvider):
         return super().open(object_name, mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      transport_params={'client': self._client}, **kwargs)
 
-    def list_objects(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
-        str]:
+    def list_objects(self,
+                     prefix: str | None = None,
+                     suffix: str | None = None,
+                     sub_path: str | None = None) -> list[str]:
         bucket = self.location
         full_prefix = ""
         if sub_path:
             full_prefix = f"{sub_path}/"
         if prefix:
             full_prefix = f"{full_prefix}{prefix}"
+
+        if suffix:
+            suffix = f"*{suffix}"
 
         paginator = self._client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=bucket, Prefix=full_prefix)
@@ -309,9 +316,12 @@ class StorageProviderS3(StorageProvider):
                 else:
                     name = key
 
-                if suffix and not name.endswith(suffix):
-                    continue
-                if name:  # Avoid empty strings or directory markers
+                if suffix:
+                    name_path = Path(name)
+                    if not name_path.match(suffix, case_sensitive=False):
+                        continue
+                if name:
+                    # Avoid empty strings or directory markers
                     objects.append(name)
         return objects
 
@@ -443,8 +453,10 @@ class StorageLocation:
                  sub_path: str | None = None) -> bool:
         return self.storage_provider.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
 
-    def list_files(self, prefix: str | None = None, suffix: str | None = None, sub_path: str | None = None) -> list[
-        File]:
+    def list_files(self,
+                   prefix: str | None = None,
+                   suffix: str | None = None,
+                   sub_path: str | None = None) -> list[File]:
         names = self.storage_provider.list_objects(prefix=prefix, suffix=suffix, sub_path=sub_path)
         files = []
         for name in names:
