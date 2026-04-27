@@ -147,6 +147,21 @@ def test_local_list_objects(temp_path):
     assert "sub/sub1.txt" in names
     assert len(names) == 1
 
+def test_local_move(temp_path):
+    src: io.StorageLocation = io.StorageLocation(temp_path, io.StorageProviderType.LOCAL_FILE)
+    f_file: io.File = src.new_file('move_me.txt')
+    with f_file.open(mode='w') as f:
+        f.write('hi there')
+    assert f_file.exists()
+    assert src.contains('move_me.txt')
+
+    dest: io.StorageLocation = src.sub_location('some_sub_dir')
+    f_file_dest = f_file.move(dest)
+    assert not f_file.exists()
+    assert not src.contains('move_me.txt')
+    assert f_file_dest.exists()
+    assert dest.contains('move_me.txt')
+
 def test_local_delete(temp_path):
     f_path = temp_path / "delete_me.txt"
     f_path.write_text("bye")
@@ -237,6 +252,24 @@ def test_s3_list_objects(s3_client):
     names = [f.object_name for f in files]
     assert "sub/sub1.txt" in names
     assert len(names) == 1
+
+def test_s3_move(s3_client):
+    client = s3_client['client']
+    bucket = s3_client['bucket']
+
+    src: io.StorageLocation = io.StorageLocation(bucket, io.StorageProviderType.S3, client=client)
+    f_file: io.File = src.new_file('move_me.txt')
+    with f_file.open(mode='w') as f:
+        f.write('hi there')
+    assert f_file.exists()
+    assert src.contains('move_me.txt')
+
+    dest: io.StorageLocation = src.sub_location('some_sub_dir')
+    f_file_dest = f_file.move(dest)
+    assert not f_file.exists()
+    assert not src.contains('move_me.txt')
+    assert f_file_dest.exists()
+    assert dest.contains('move_me.txt')
 
 def test_s3_delete(s3_client):
     client = s3_client['client']

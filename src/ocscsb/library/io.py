@@ -436,7 +436,7 @@ class File:
             return dest_file
         except Exception as e:
             raise StorageProvider.IOError(f"Unable to move {self.get_uri()} to {dest_file.get_uri()} due to error: "
-                                          f"str(e)")
+                                          f"{str(e)}")
 
     def delete(self) -> bool:
         return self.storage_provider.delete_object(self.object_name)
@@ -449,29 +449,41 @@ class StorageLocation:
         if isinstance(provider, str):
             provider = StorageProviderType[provider.upper()]
         self.provider_type: StorageProviderType = provider
+        self._sub_path: str | None = None
+        self._client = kwargs.get('client',None)
         match provider:
             case StorageProviderType.LOCAL_FILE:
-                self.storage_provider: StorageProvider = StorageProviderFile(self.location)
+                if 'sub_path' in kwargs:
+                    location = f"{self.location}/{kwargs['sub_path']}"
+                else:
+                    location = self.location
+                self.storage_provider: StorageProvider = StorageProviderFile(location)
             case StorageProviderType.S3:
+                self._sub_path = kwargs.get('sub_path', None)
                 self.storage_provider: StorageProvider = StorageProviderS3(self.location,
-                                                                           client=kwargs.get('client',
-                                                                                             None))
+                                                                           client=self._client)
             case _:
                 raise ValueError(f"Unable to create IO manager for unknown storage provider type")
 
     def new_file(self, object_name: str) -> File:
+        if self._sub_path:
+            object_name = f"{self._sub_path}/{object_name}"
         return File(self.location, object_name, self.storage_provider)
 
     def contains(self, object_name: str,
                  *,
                  ttl_sec: int = ALWAYS_EXISTS_TTL,
                  sub_path: str | None = None) -> bool:
+        if self._sub_path:
+            object_name = f"{self._sub_path}/{object_name}"
         return self.storage_provider.object_exists(object_name, ttl_sec=ttl_sec, sub_path=sub_path)
 
     def list_files(self,
                    prefix: str | None = None,
                    suffix: str | None = None,
                    sub_path: str | None = None) -> list[File]:
+        if sub_path is None and self._sub_path:
+            sub_path = self._sub_path
         names = self.storage_provider.list_objects(prefix=prefix, suffix=suffix, sub_path=sub_path)
         files = []
         for name in names:
@@ -483,13 +495,23 @@ class StorageLocation:
         return files
 
     def delete_file(self, object_name: str, sub_path: str | None = None) -> bool:
+        if sub_path is None and self._sub_path:
+            sub_path = self._sub_path
         return self.storage_provider.delete_object(object_name, sub_path=sub_path)
 
     def delete_all(self, sub_path: str | None = None) -> bool:
+        if sub_path is None and self._sub_path:
+            sub_path = self._sub_path
         return self.storage_provider.delete_all(sub_path=sub_path)
 
     def sub_location(self, sub_location: str) -> 'StorageLocation':
-        return StorageLocation(f"{self.location}/{sub_location}", self.provider_type)
+        if self._sub_path is not None:
+            sub_location = f"{self._sub_path}/{sub_location}"
+        return StorageLocation(self.location, self.provider_type,
+                               sub_path=sub_location,
+                               client=self._client)
 
     def get_uri(self, object_name: str | None = None, sub_path: str | None = None) -> str:
+        if sub_path is None and self._sub_path:
+            sub_path = self._sub_path
         return str(self.storage_provider.generate_resource_uri(object_name=object_name, sub_path=sub_path))
