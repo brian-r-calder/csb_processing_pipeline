@@ -22,6 +22,9 @@ class StorageProvider(ABC):
     class ObjectStateError(Exception):
         ...
 
+    class IOError(Exception):
+        ...
+
     def __init__(self, location: str):
         self.location = location
 
@@ -422,6 +425,18 @@ class File:
 
     def get_suffix(self) -> str:
         return Path(self.object_name).suffix
+
+    def move(self, dest: 'StorageLocation') -> 'File':
+        try:
+            dest_file: File = dest.new_file(self.object_name)
+            with self.open(mode='r') as fread:
+                with dest_file.open(mode='w') as fwrite:
+                    fwrite.write(fread.read())
+            self.delete()
+            return dest_file
+        except Exception as e:
+            raise StorageProvider.IOError(f"Unable to move {self.get_uri()} to {dest_file.get_uri()} due to error: "
+                                          f"str(e)")
 
     def delete(self) -> bool:
         return self.storage_provider.delete_object(self.object_name)

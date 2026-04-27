@@ -942,12 +942,14 @@ class Processor:
                 print(f"[WARN] {fn} has no recognized EPSG code, skipping.")
                 continue
 
-            out_folder = os.path.join(input_dir, f"EPSG_{epsg}")
-            os.makedirs(out_folder, exist_ok=True)
+            # out_folder = os.path.join(input_dir, f"EPSG_{epsg}")
+            # os.makedirs(out_folder, exist_ok=True)
+            out_folder: io.StorageLocation = input_dir.sub_location(f"EPSG_{epsg}")
 
-            dest_path = os.path.join(out_folder, fn)
-            shutil.move(src_path, dest_path)
-            print(f"Moved {fn} → {out_folder}")
+            # dest_path = os.path.join(out_folder, fn)
+            # shutil.move(src_path, dest_path)
+            fn.move(out_folder)
+            print(f"Moved {fn.get_uri()} → {out_folder.get_uri()}")
 
     def create_vrts_for_epsg_folders(self, base_dir):
         """
