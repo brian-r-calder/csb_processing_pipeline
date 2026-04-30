@@ -143,6 +143,11 @@ class StorageProvider(ABC):
         """List objects in the storage provider."""
         ...
 
+    def list_directory_like(self,
+                            pattern: str | None = None) -> list[str]:
+        """List directory-like entities along object paths"""
+        ...
+
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         """Delete an object from the storage provider."""
         ...
@@ -208,7 +213,6 @@ class StorageProviderFile(StorageProvider):
             passes |= p.is_dir()
         return passes
 
-
     def list_objects(self, prefix: str | None = None,
                      suffix: str | Sequence[str] | None = None,
                      sub_path: str | None = None, *,
@@ -232,6 +236,10 @@ class StorageProviderFile(StorageProvider):
 
         return [str(p.relative_to(search_path)) for p in search_path.glob(pattern, case_sensitive=False) \
                 if self._object_type_filter(object_types, p)]
+
+    def list_directory_like(self,
+                            pattern: str | None = None) -> list[str]:
+        return self.list_objects(prefix=pattern, object_types=ObjectType.DIRECTORY)
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         object_path = self.generate_resource_uri(object_name=object_name, sub_path=sub_path)
@@ -320,6 +328,8 @@ class StorageProviderS3(StorageProvider):
                      suffix: str | None = None,
                      sub_path: str | None = None,
                      object_types: ObjectType = ObjectType.FILE) -> list[str]:
+        if ObjectType.DIRECTORY in object_types:
+            raise ValueError(f"Object type {ObjectType.DIRECTORY.name} not supported for this provider.")
         bucket = self.location
         obj_prefix = ''
         if sub_path:
@@ -354,6 +364,19 @@ class StorageProviderS3(StorageProvider):
                     # Avoid empty strings or directory markers
                     objects.append(name)
         return objects
+
+    def list_directory_like(self,
+                            pattern: str | None = None) -> list[str]:
+        if pattern and not pattern.endswith('/') and not '*' in pattern:
+            pattern = f"{pattern}*/"
+        objects = self.list_objects(prefix=pattern)
+        dirs = set()
+        for obj in objects:
+            comp = obj.split('/')
+            if len(comp) > 1:
+                dirs.add(comp[0])
+
+        return list(dirs)
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         key = object_name
@@ -523,8 +546,8 @@ class StorageLocation:
         return files
 
     def list_sub_paths(self,
-                       prefix: str | None = None) -> list['StorageLocation']:
-        names = self.storage_provider.list_objects(prefix=prefix, object_types=ObjectType.DIRECTORY)
+                       pattern: str | None = None) -> list['StorageLocation']:
+        names = self.storage_provider.list_directory_like(pattern=pattern)
         dirs = []
         for name in names:
             dirs.append(self.sub_location(name))

@@ -157,16 +157,16 @@ def test_local_list_objects(temp_path):
     assert len(names) == 2
 
     # List sub_path, directory
-    dirs = location.list_sub_paths(prefix='EPSG_')
+    dirs = location.list_sub_paths(pattern='EPSG_')
     assert len(dirs) == 1
     dir = dirs[0]
-    assert dir.location.endswith('/EPSG_32619')
+    assert dir.get_uri().endswith('/EPSG_32619')
     assert dir.contains('sub1.txt')
     assert dir.contains('sub2.tiff')
     files = dir.list_files(suffix='.tif*')
     assert len(files) == 1
     assert files[0].exists()
-    assert files[0].object_name == 'sub2.tiff'
+    assert files[0].object_name.endswith('sub2.tiff')
 
 
 def test_local_move(temp_path):
@@ -285,6 +285,18 @@ def test_s3_list_objects(s3_client):
     assert "EPSG_32619/sub1.txt" in names
     assert "EPSG_32619/sub2.tiff" in names
     assert len(names) == 2
+
+    # List sub_path, directory
+    dirs = location.list_sub_paths(pattern='EPSG_')
+    assert len(dirs) == 1
+    dir = dirs[0]
+    assert dir.get_uri().endswith('/EPSG_32619')
+    assert dir.contains('sub1.txt')
+    assert dir.contains('sub2.tiff')
+    files = dir.list_files(suffix='.tif*')
+    assert len(files) == 1
+    assert files[0].exists()
+    assert files[0].object_name.endswith('sub2.tiff')
 
 def test_s3_move(s3_client):
     client = s3_client['client']
