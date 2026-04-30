@@ -157,7 +157,7 @@ def test_local_list_objects(temp_path):
     assert len(names) == 2
 
     # List sub_path, directory
-    dirs = location.list_sub_paths(prefix='EPSG_*')
+    dirs = location.list_sub_paths(prefix='EPSG_')
     assert len(dirs) == 1
     dir = dirs[0]
     assert dir.location.endswith('/EPSG_32619')

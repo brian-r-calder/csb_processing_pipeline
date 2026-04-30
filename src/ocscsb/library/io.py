@@ -135,9 +135,6 @@ class StorageProvider(ABC):
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      **kwargs)
 
-    def _object_type_filter(self, object_types: ObjectType, obj) -> bool:
-        ...
-
     def list_objects(self,
                      prefix: str | None = None,
                      suffix: str | None = None,
@@ -224,7 +221,10 @@ class StorageProviderFile(StorageProvider):
 
         pattern: str = ''
         if prefix:
-            pattern = f"{prefix}"
+            if not prefix.endswith('*'):
+                pattern = f"{prefix}*"
+            else:
+                pattern = prefix
         if suffix:
             pattern = f"{pattern}*{suffix}"
         if pattern == '':
