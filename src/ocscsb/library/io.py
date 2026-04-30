@@ -2,7 +2,7 @@ from abc import ABC
 from pathlib import Path
 import datetime
 import time
-from enum import Enum
+from enum import Enum, Flag, auto
 from typing import cast, Sequence
 import shutil
 
@@ -17,6 +17,9 @@ from ocscsb.library.cloud import aws
 DEFAULT_TTL_SEC = 259_200
 ALWAYS_EXISTS_TTL = -1
 
+class ObjectType(Flag):
+    FILE = auto()
+    DIRECTORY = auto()
 
 class StorageProvider(ABC):
     class ObjectStateError(Exception):
@@ -132,10 +135,14 @@ class StorageProvider(ABC):
                      mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
                      **kwargs)
 
+    def _object_type_filter(self, object_types: ObjectType, obj) -> bool:
+        ...
+
     def list_objects(self,
                      prefix: str | None = None,
                      suffix: str | None = None,
-                     sub_path: str | None = None) -> list[str]:
+                     sub_path: str | None = None,
+                     object_types: ObjectType = ObjectType.FILE) -> list[str]:
         """List objects in the storage provider."""
         ...
 
@@ -193,9 +200,22 @@ class StorageProviderFile(StorageProvider):
         else:
             object_parent.mkdir(parents=True, exist_ok=True)
 
+    def _object_type_filter(self, object_types: ObjectType, obj) -> bool:
+        if not isinstance(obj, Path):
+            raise ValueError(f"Parameter obj was expected to be of type Path but was {type(obj)}")
+        p = cast(Path, obj)
+        passes: bool = False
+        if ObjectType.FILE in object_types:
+            passes |= p.is_file()
+        if ObjectType.DIRECTORY in object_types:
+            passes |= p.is_dir()
+        return passes
+
+
     def list_objects(self, prefix: str | None = None,
                      suffix: str | Sequence[str] | None = None,
-                     sub_path: str | None = None) -> list[str]:
+                     sub_path: str | None = None, *,
+                     object_types: ObjectType = ObjectType.FILE) -> list[str]:
         search_path = self.location_path
         if sub_path is not None:
             search_path = search_path / sub_path
@@ -210,7 +230,8 @@ class StorageProviderFile(StorageProvider):
         if pattern == '':
             pattern = '*'
 
-        return [str(p.relative_to(search_path)) for p in search_path.glob(pattern, case_sensitive=False) if p.is_file()]
+        return [str(p.relative_to(search_path)) for p in search_path.glob(pattern, case_sensitive=False) \
+                if self._object_type_filter(object_types, p)]
 
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         object_path = self.generate_resource_uri(object_name=object_name, sub_path=sub_path)
@@ -297,7 +318,8 @@ class StorageProviderS3(StorageProvider):
     def list_objects(self,
                      prefix: str | None = None,
                      suffix: str | None = None,
-                     sub_path: str | None = None) -> list[str]:
+                     sub_path: str | None = None,
+                     object_types: ObjectType = ObjectType.FILE) -> list[str]:
         bucket = self.location
         obj_prefix = ''
         if sub_path:
@@ -450,20 +472,21 @@ class File:
 class StorageLocation:
     def __init__(self, location: str | Path, provider: StorageProviderType | str,
                  **kwargs):
-        self.location = str(location)
         if isinstance(provider, str):
             provider = StorageProviderType[provider.upper()]
-        self.provider_type: StorageProviderType = provider
+        self.provider_type: StorageProviderType | str = provider
         self._sub_path: str | None = None
         self._client = kwargs.get('client',None)
         match provider:
             case StorageProviderType.LOCAL_FILE:
                 if 'sub_path' in kwargs:
-                    location = f"{self.location}/{kwargs['sub_path']}"
+                    location: str = f"{location}/{kwargs['sub_path']}"
                 else:
-                    location = self.location
+                    location: str = cast(str, location)
+                self.location = location
                 self.storage_provider: StorageProvider = StorageProviderFile(location)
             case StorageProviderType.S3:
+                self.location = cast(str, location)
                 self._sub_path = kwargs.get('sub_path', None)
                 self.storage_provider: StorageProvider = StorageProviderS3(self.location,
                                                                            client=self._client)
@@ -498,6 +521,14 @@ class StorageLocation:
                 obj_name = name
             files.append(File(self.location, obj_name, self.storage_provider))
         return files
+
+    def list_sub_paths(self,
+                       prefix: str | None = None) -> list['StorageLocation']:
+        names = self.storage_provider.list_objects(prefix=prefix, object_types=ObjectType.DIRECTORY)
+        dirs = []
+        for name in names:
+            dirs.append(self.sub_location(name))
+        return dirs
 
     def delete_file(self, object_name: str, sub_path: str | None = None) -> bool:
         if sub_path is None and self._sub_path:

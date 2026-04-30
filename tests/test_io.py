@@ -149,13 +149,24 @@ def test_local_list_objects(temp_path):
     assert "EPSG_32619/sub1.txt" not in names
     assert "EPSG_32619/sub2.tiff" in names
 
-
     # List sub_path
     files = location.list_files(sub_path="EPSG_32619")
     names = [f.object_name for f in files]
     assert "EPSG_32619/sub1.txt" in names
     assert "EPSG_32619/sub2.tiff" in names
     assert len(names) == 2
+
+    # List sub_path, directory
+    dirs = location.list_sub_paths(prefix='EPSG_*')
+    assert len(dirs) == 1
+    dir = dirs[0]
+    assert dir.location.endswith('/EPSG_32619')
+    assert dir.contains('sub1.txt')
+    assert dir.contains('sub2.tiff')
+    files = dir.list_files(suffix='.tif*')
+    assert len(files) == 1
+    assert files[0].exists()
+    assert files[0].object_name == 'sub2.tiff'
 
 
 def test_local_move(temp_path):
