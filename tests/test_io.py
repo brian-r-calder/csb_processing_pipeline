@@ -161,6 +161,7 @@ def test_local_list_objects(temp_path):
     assert len(dirs) == 1
     dir = dirs[0]
     assert dir.get_uri().endswith('/EPSG_32619')
+    assert dir.name == 'EPSG_32619'
     assert dir.contains('sub1.txt')
     assert dir.contains('sub2.tiff')
     files = dir.list_files(suffix='.tif*')
@@ -227,12 +228,18 @@ def test_get_uri(temp_path):
     eff: io.File = location.new_file("file.txt")
     assert eff.get_uri() == location.get_uri("file.txt")
     assert eff.get_gdal_vsi_path() == location.get_uri("file.txt")
+    # Relative VSI path
+    assert eff.get_gdal_vsi_path() != eff.get_gdal_vsi_path(relative=True)
+    assert eff.get_gdal_vsi_path(relative=True) == 'file.txt'
 
     # File with sub-path URI
     assert location.get_uri("file.txt", sub_path="sub") == str((temp_path / "sub" / "file.txt").absolute())
     eff: io.File = location.new_file("sub/file.txt")
     assert eff.get_uri() == location.get_uri("file.txt", sub_path="sub")
     assert eff.get_gdal_vsi_path() == location.get_uri("file.txt", sub_path="sub")
+    # Relative VSI path
+    assert eff.get_gdal_vsi_path() != eff.get_gdal_vsi_path(relative=True)
+    assert eff.get_gdal_vsi_path(relative=True) == 'sub/file.txt'
 
 def test_s3_list_objects(s3_client):
     client = s3_client['client']
@@ -291,6 +298,7 @@ def test_s3_list_objects(s3_client):
     assert len(dirs) == 1
     dir = dirs[0]
     assert dir.get_uri().endswith('/EPSG_32619')
+    assert dir.name == 'EPSG_32619'
     assert dir.contains('sub1.txt')
     assert dir.contains('sub2.tiff')
     files = dir.list_files(suffix='.tif*')
@@ -360,9 +368,13 @@ def test_s3_get_uri(s3_client):
     eff: io.File = location.new_file("file.txt")
     assert eff.get_uri() == location.get_uri("file.txt")
     assert eff.get_gdal_vsi_path() == f"/vsis3/{bucket}/file.txt"
+    # Relative VSI path (which should be the same as non-relative since this is a cloud object store)
+    assert eff.get_gdal_vsi_path() == eff.get_gdal_vsi_path(relative=True)
 
     # File with sub-path URI
     assert location.get_uri("file.txt", sub_path="sub") == f"s3://{bucket}/sub/file.txt"
     eff: io.File = location.new_file("sub/file.txt")
     assert eff.get_uri() == location.get_uri("file.txt", sub_path="sub")
     assert eff.get_gdal_vsi_path() == f"/vsis3/{bucket}/sub/file.txt"
+    # Relative VSI path (which should be the same as non-relative since this is a cloud object store)
+    assert eff.get_gdal_vsi_path() == eff.get_gdal_vsi_path(relative=True)

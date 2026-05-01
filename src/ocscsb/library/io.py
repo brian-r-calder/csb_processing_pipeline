@@ -50,8 +50,9 @@ class StorageProvider(ABC):
         ...
 
     def generate_gdal_vsi_path(self, object_name: str,
-                              *,
-                              sub_path: str | None = None) -> str:
+                               *,
+                               sub_path: str | None = None,
+                               relative: bool = False) -> str:
         """
         Return the GDAL VSI (https://gdal.org/en/stable/user/virtual_file_systems.html) path for the resource
         named `object_name` located at `self.location`.
@@ -60,6 +61,8 @@ class StorageProvider(ABC):
         ----------
         object_name
         sub_path
+        relative
+            Return a path relative this provider's location. Note: this may not be applicable to cloud object stores.
 
         Returns
         -------
@@ -173,8 +176,13 @@ class StorageProviderFile(StorageProvider):
         return object_parent
 
     def generate_gdal_vsi_path(self, object_name: str,
-                              *,
-                              sub_path: str | None = None) -> str:
+                               *,
+                               sub_path: str | None = None,
+                               relative: bool = False) -> str:
+        if relative:
+            if sub_path:
+                return f"{sub_path}/{object_name}"
+            return object_name
         return str(self.generate_resource_uri(object_name=object_name, sub_path=sub_path))
 
     def object_exists(self, object_name: str,
@@ -278,7 +286,8 @@ class StorageProviderS3(StorageProvider):
 
     def generate_gdal_vsi_path(self, object_name: str,
                                *,
-                               sub_path: str | None = None) -> str:
+                               sub_path: str | None = None,
+                               relative: bool = False) -> str:
         if sub_path is not None:
             return f"/vsis3/{self.location}/{sub_path}/{object_name}"
         else:
@@ -467,8 +476,9 @@ class File:
     def get_uri(self) -> str:
         return str(self.storage_provider.generate_resource_uri(object_name=self.object_name))
 
-    def get_gdal_vsi_path(self) -> str:
-        return self.storage_provider.generate_gdal_vsi_path(self.object_name)
+    def get_gdal_vsi_path(self, *,
+                          relative: bool = False) -> str:
+        return self.storage_provider.generate_gdal_vsi_path(self.object_name, relative=relative)
 
     def get_stem(self) -> str:
         return Path(self.object_name).stem
@@ -515,6 +525,19 @@ class StorageLocation:
                                                                            client=self._client)
             case _:
                 raise ValueError(f"Unable to create IO manager for unknown storage provider type")
+
+    @property
+    def name(self) -> str:
+        """
+        Return a string representing the leaf node of the path of this storage location.
+
+        Returns
+        -------
+        A string representing the leaf node of the path of this storage location.
+        """
+        if self._sub_path:
+            return self._sub_path
+        return self.location.split('/')[-1]
 
     def new_file(self, object_name: str) -> File:
         if self._sub_path:

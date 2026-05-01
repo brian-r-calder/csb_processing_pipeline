@@ -956,30 +956,40 @@ class Processor:
         Scans for 'EPSG_' subfolders and builds a VRT for the TIFFs in each.
         """
         print("\nBuilding VRTs for each EPSG folder...")
-        for folder_name in os.listdir(base_dir):
-            if folder_name.startswith("EPSG_") and os.path.isdir(os.path.join(base_dir, folder_name)):
-                directory = os.path.join(base_dir, folder_name)
-                pattern = os.path.join(directory, "*.tif")
-                files = glob.glob(pattern)
+        for directory in base_dir.list_sub_paths(pattern='EPSG_'):
+            files = directory.list_files(suffix='.tif*')
+            print(f"Found {len(files)} files in {directory.get_uri()}. Building VRT...")
+            vrt_name = f"mosaic_{directory.name}.vrt"
 
-                if not files:
-                    print(f"No GeoTIFFs found in {directory}, skipping VRT creation.")
-                    continue
+            # First, create VRT in a temporary file
+            tmp_vrt = self.tmp_dir / vrt_name
+            # Get GDAL-compatible path to each file
+            gdal_paths = [f.get_gdal_vsi_path(relative=True) for f in files]
+            gdal.BuildVRT(tmp_vrt, gdal_paths)
+            # Now, copy temporary VRT to directory
+            vrt_file = directory.new_file(vrt_name)
+            with tmp_vrt.open(mode='r') as r:
+                with vrt_file.open(mode='w') as w:
+                    w.write(r.read())
+            print(f"VRT created: {vrt_file.get_uri()}")
 
-                print(f"Found {len(files)} files in {directory}. Building VRT...")
-                vrt_filename = os.path.join(directory, f"mosaic_{folder_name}.vrt")
-
-                gdal.BuildVRT(vrt_filename, files)
-                print("VRT created:", vrt_filename)
-
-                # Build overviews
-                print("Building overviews for VRT...")
-                ds = gdal.Open(vrt_filename)
-                if ds:
-                    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
-                    ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
-                    ds = None
-                    print(f"Overviews built for {vrt_filename}")
+            # Build overviews (open the VRT in tmp since GDAL Python API can't take a file handle)
+            print("Building overviews for VRT...")
+            ds = gdal.Open(tmp_vrt)
+            if ds:
+                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+                ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+                ds = None
+            # Copy overviews to directory
+            tmp_ovr: Path = Path(f"{str(tmp_vrt)}.ovr")
+            if not tmp_ovr.exists():
+                raise ProcessingException(f"Expected .ovr to exist for VRT {str(tmp_vrt)}, but it did not.")
+            ovr_name = f"{vrt_name}.ovr"
+            ovr_file = directory.new_file(ovr_name)
+            with tmp_ovr.open(mode='rb') as r:
+                with ovr_file.open(mode='wb') as w:
+                    w.write(r.read())
+            print(f"Overviews built for {vrt_file.get_uri()}")
 
     def run_final_gridding_and_export(self):
         """
