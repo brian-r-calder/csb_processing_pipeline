@@ -109,7 +109,7 @@ class Processor:
                  output_dir: str,
                  *,
                  provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT,
-                 clean_up_callback: Callable|None = None,
+                 clean_up_callback: Callable | None = None,
                  fp_zones: str | None = None,
                  use_bluetopo: bool = True,
                  use_fes_model: bool = True,
@@ -160,7 +160,10 @@ class Processor:
         self.export_gp = export_gp
         self.insert_duckdb = insert_duckdb
         self.export_final_gpkg = export_final_gpkg
-        self.tessellation_shp = tessellation_shp
+        self.tessellation_shp: io.File | None = None
+        if tessellation_shp and tessellation_shp != '':
+            pth = Path(tessellation_shp).absolute()
+            self.tessellation_shp = io.File.from_path(pth)
         self.grid_resolution = grid_resolution
         self.organize_vrt = organize_vrt
         self.clean_up_callback = clean_up_callback
@@ -290,7 +293,7 @@ class Processor:
                 self.master_offsets.loc[existing_index[0], list(new_row.columns)] = new_row.iloc[0]
 
         try:
-            self.master_offsets.to_csv(self.master_offset_file.open(mode='w'), index=False)
+            self.master_offsets.to_csv(self.master_offset_file.open(mode='wb'), index=False)
         except Exception as e:
             print(f"Failed to update master offsets: {e}")
 
@@ -734,7 +737,7 @@ class Processor:
                 out.loc[(out['mean'] > 3) | (out['mean'] < -11), ['mean', 'std', 'count']] = [0, 999, 0]
                 out.loc[(out['std'] > 7), ['mean', 'std', 'count']] = [0, 999, 0]
                 vessel_offsets_file: io.File = self.output_dir.new_file(f"VESSEL_OFFSETS_csb_corr_{title}.csv")
-                out.to_csv(vessel_offsets_file.open(mode='a'))
+                out.to_csv(vessel_offsets_file.open(mode='ab'))
 
                 platform_mapping = filtered_csb_corr[['unique_id', 'platform_name']].drop_duplicates()
                 out_with_platform = out.merge(platform_mapping, on='unique_id', how='left')
@@ -858,7 +861,7 @@ class Processor:
             # gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
             gpkg_path: io.File = self.output_dir.new_file(f"csb_processed_{title}.gpkg")
             print('*****Exporting processed CSB data to geopackage*****')
-            csb_corr1.to_file(gpkg_path.open(mode='w'), driver='GPKG', layer='csb')
+            csb_corr1.to_file(gpkg_path.open(mode='wb'), driver='GPKG', layer='csb')
             print(f"Geopackage exported to {gpkg_path.get_uri()}")
 
         return csb_corr1
@@ -914,7 +917,7 @@ class Processor:
         avg_array[valid_mask] = sum_array[valid_mask] / count_array[valid_mask]
 
         with rasterio.open(
-                out_raster_path.open(mode='w'), driver='GTiff',
+                out_raster_path.open(mode='wb'), driver='GTiff',
                 height=height, width=width, count=1,
                 dtype=np.float32, crs=gdf.crs.to_string(),
                 transform=transform, nodata=nodata,
@@ -965,6 +968,7 @@ class Processor:
             tmp_vrt = self.tmp_dir / vrt_name
             # Get GDAL-compatible path to each file
             gdal_paths = [f.get_gdal_vsi_path(relative=True) for f in files]
+            # TODO: May need to set current working directory to directory else relative paths may cause BuildVRT to fail
             gdal.BuildVRT(tmp_vrt, gdal_paths)
             # Now, copy temporary VRT to directory
             vrt_file = directory.new_file(vrt_name)
@@ -999,9 +1003,9 @@ class Processor:
         # output_folder = os.path.join(self.output_dir, "final_products")
         # os.makedirs(output_folder, exist_ok=True)
         with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
-            if self.tessellation_shp is not None and os.path.exists(self.tessellation_shp):
-                print(f"Using tessellation scheme: {self.tessellation_shp}")
-                polygons_gdf = gpd.read_file(self.tessellation_shp)
+            if self.tessellation_shp is not None and self.tessellation_shp.exists():
+                print(f"Using tessellation scheme: {self.tessellation_shp.get_uri()}")
+                polygons_gdf = gpd.read_file(self.tessellation_shp.open(mode='rb'))
                 if polygons_gdf.crs.to_epsg() != 4326:
                     polygons_gdf = polygons_gdf.to_crs(epsg=4326)
 
@@ -1042,8 +1046,8 @@ class Processor:
                         # gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
                         gpkg_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
-                        points_gdf_4326.to_file(gpkg_path.open(mode='w'), driver="GPKG")
-                        print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path}")
+                        points_gdf_4326.to_file(gpkg_path.open(mode='wb'), driver="GPKG")
+                        print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                     lat_c, lon_c = poly_geom.centroid.y, poly_geom.centroid.x
                     try:
@@ -1097,7 +1101,7 @@ class Processor:
                     # gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
                     gpkg_path: io.File = self.final_products_loc.new_file('csb_final_points.gpkg')
                     print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
-                    points_gdf_4326.to_file(gpkg_path.open(mode='w'), driver="GPKG")
+                    points_gdf_4326.to_file(gpkg_path.open(mode='wb'), driver="GPKG")
                     print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                 try:
@@ -1169,9 +1173,8 @@ class Processor:
 
     # --- START: POST-PROCESSING ANALYSIS FUNCTIONS ---
 
-    def run_histograms_calibration_points(self, db_path, hist_export_dir):
+    def run_histograms_calibration_points(self, db_path, hist_export_dir: io.StorageLocation):
         print("Starting Post-Processing Step 1: Histograms and Calibration Points")
-        os.makedirs(hist_export_dir, exist_ok=True)
 
         with duckdb.connect(database=db_path, read_only=False) as con:
             columns_query = "DESCRIBE csb"
@@ -1203,8 +1206,8 @@ class Processor:
 
                 if not data_df.empty:
                     platform_name = data_df['platform_name_x'].iloc[0]
-                    output_csv_path = os.path.join(hist_export_dir, f"{unique_id}_csb_offset_analysis.csv")
-                    data_df.to_csv(output_csv_path)
+                    output_csv_path: io.File = hist_export_dir.new_file(f"{unique_id}_csb_offset_analysis.csv")
+                    data_df.to_csv(output_csv_path.open(mode='wb'))
 
                     plt.figure(figsize=(10, 6))
                     sns.histplot(data_df['diff'], bins=30, kde=True, color="skyblue", label='Histogram')
@@ -1222,7 +1225,8 @@ class Processor:
                     plt.xlabel('Diff')
                     plt.ylabel('Frequency')
                     plt.legend()
-                    plt.savefig(os.path.join(hist_export_dir, f"{unique_id}_histogram.png"))
+                    histo_png: io.File = hist_export_dir.new_file(f"{unique_id}_histogram.png")
+                    plt.savefig(histo_png.open(mode='b'))
                     plt.close()
 
         print("Completed Step 1.")
@@ -1270,7 +1274,7 @@ class Processor:
 
         print("Completed Step 2.")
 
-    def run_export_transits(self, db_path, exports_folder):
+    def run_export_transits(self, db_path, exports_folder: io.StorageLocation):
         print("Starting Post-Processing Step 3: Outlier Detection & Transit ID Assignment")
 
         # --- Helper Functions ---
@@ -1321,7 +1325,7 @@ class Processor:
                 return full_smoothed_depth, outlier_count
             return data[~outliers], outlier_count
 
-        def create_geotiff(gdf, filename, resolution=8):
+        def create_geotiff(gdf, filename: io.File, resolution=8):
             try:
                 bounds = gdf.total_bounds
                 x_min, y_min, x_max, y_max = bounds
@@ -1342,7 +1346,7 @@ class Processor:
                     'compress': 'lzw',
                     'interleave': 'band'
                 }
-                with rasterio.open(filename, "w", **out_meta) as dest:
+                with rasterio.open(filename.open(mode='wb'), **out_meta) as dest:
                     for idx, col in enumerate(['depth', 'uncertainty'], start=1):
                         array = np.full((y_res, x_res), out_meta['nodata'], dtype='float32')
                         for point, value in zip(gdf.geometry, gdf[col]):
@@ -1370,7 +1374,6 @@ class Processor:
             df['transit_id'] = transit_ids
             return df
 
-        os.makedirs(exports_folder, exist_ok=True)
         MAX_HOURS_GAP = 4
         MAX_DAYS_DURATION = 7
         with duckdb.connect(database=db_path, read_only=False) as con:
@@ -1444,7 +1447,7 @@ class Processor:
                     print(f"    Outliers detected in Pass 3: {outlier_count_3}")
                     group['Final_Smoothed_Depth'] = final_smoothed_depth
 
-                    plot_filename = os.path.join(exports_folder, f"{unique_id}_{transit_id}_outlier_plot.png")
+                    plot_filename: io.File = exports_folder.new_file(f"{unique_id}_{transit_id}_outlier_plot.png")
                     fig, ax = plt.subplots(figsize=(12, 6))
                     mask_valid = group['Outlier'] == False
                     mask_outlier = group['Outlier'] == True
@@ -1456,9 +1459,9 @@ class Processor:
                     ax.set_xlabel("Record Index")
                     ax.set_ylabel("Depth")
                     ax.legend()
-                    plt.savefig(plot_filename)
+                    plt.savefig(plot_filename.open(mode='wb'))
                     plt.close()
-                    print(f"    Saved outlier plot to {plot_filename}")
+                    print(f"    Saved outlier plot to {plot_filename.get_uri()}")
 
                     updates = []
                     for idx, row in group.iterrows():
@@ -1514,22 +1517,22 @@ class Processor:
                             print(f"Could not determine NAD83 UTM zone for lat={avg_lat}, lon={avg_lon}: {ve}")
                             continue
 
-                        zone_folder = os.path.join(exports_folder, f"zone_{epsg_zone}")
-                        os.makedirs(zone_folder, exist_ok=True)
+                        # zone_folder = os.path.join(exports_folder, f"zone_{epsg_zone}")
+                        # os.makedirs(zone_folder, exist_ok=True)
+                        zone_folder: io.StorageLocation = exports_folder.sub_location(f"zone_{epsg_zone}")
                         non_outlier_gdf.to_crs(epsg=epsg_zone, inplace=True)
 
                         start_date = group['time'].min().strftime('%Y%m%d%H%M%S')
                         end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
                         gpkg_filename = f"{unique_id}_{transit_id}_{start_date}_{end_date}.gpkg"
-                        gpkg_path = os.path.join(zone_folder, gpkg_filename)
-
-                        non_outlier_gdf.to_file(gpkg_path, driver='GPKG')
-                        print(f"Exported GeoPackage {gpkg_path}")
+                        gpkg_path: io.File = zone_folder.new_file(gpkg_filename)
+                        non_outlier_gdf.to_file(gpkg_path.open(mode='wb'), driver='GPKG')
+                        print(f"Exported GeoPackage {gpkg_path.get_uri()}")
 
                         tiff_filename = gpkg_filename.replace('.gpkg', '.tif')
-                        tiff_path = os.path.join(zone_folder, tiff_filename)
+                        tiff_path: io.File = zone_folder.new_file(tiff_filename)
                         create_geotiff(non_outlier_gdf, tiff_path)
-                        print(f"Exported GeoTIFF {tiff_path}")
+                        print(f"Exported GeoTIFF {tiff_path.get_uri()}")
                         del gdf
 
                     del group
@@ -1592,8 +1595,8 @@ class Processor:
 
             if self.run_analysis:
                 print("\n***** Starting Post-Processing Analysis *****")
-                hist_export_dir = os.path.join(self.output_dir, "histograms")
-                exports_folder = os.path.join(self.output_dir, "transit_exports")
+                hist_export_dir: io.StorageLocation = self.output_dir.sub_location('histograms')
+                exports_folder: io.StorageLocation = self.output_dir.sub_location('transit_exports')
 
                 if not self.duckdb_path.exists():
                     print(f"Error: DuckDB file not found at {str(self.duckdb_path)}. Cannot run analysis.")
