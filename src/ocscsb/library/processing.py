@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 import traceback as tb
 import gc
+import io
 
 import requests
 import geopandas as gpd
@@ -864,7 +865,11 @@ class Processor:
             # gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
             gpkg_path: io.File = self.output_dir.new_file(f"csb_processed_{title}.gpkg")
             print('*****Exporting processed CSB data to geopackage*****')
-            csb_corr1.to_file(gpkg_path.open(mode='wb'), driver='GPKG', layer='csb')
+            # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+            buff = io.BytesIO()
+            csb_corr1.to_file(buff, driver='GPKG', layer='csb')
+            gpkg_path.write(buff)
+            del buff
             print(f"Geopackage exported to {gpkg_path.get_uri()}")
 
         return csb_corr1
@@ -1049,7 +1054,11 @@ class Processor:
                         # gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
                         gpkg_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
-                        points_gdf_4326.to_file(gpkg_path.open(mode='wb'), driver="GPKG")
+                        # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                        buff = io.BytesIO()
+                        points_gdf_4326.to_file(buff, driver="GPKG")
+                        gpkg_path.write(buff)
+                        del buff
                         print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                     lat_c, lon_c = poly_geom.centroid.y, poly_geom.centroid.x
@@ -1104,7 +1113,11 @@ class Processor:
                     # gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
                     gpkg_path: io.File = self.final_products_loc.new_file('csb_final_points.gpkg')
                     print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
-                    points_gdf_4326.to_file(gpkg_path.open(mode='wb'), driver="GPKG")
+                    # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                    buff = io.BytesIO()
+                    points_gdf_4326.to_file(buff, driver="GPKG")
+                    gpkg_path.write(buff)
+                    del buff
                     print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                 try:
@@ -1529,7 +1542,11 @@ class Processor:
                         end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
                         gpkg_filename = f"{unique_id}_{transit_id}_{start_date}_{end_date}.gpkg"
                         gpkg_path: io.File = zone_folder.new_file(gpkg_filename)
-                        non_outlier_gdf.to_file(gpkg_path.open(mode='wb'), driver='GPKG')
+                        # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                        buff = io.BytesIO()
+                        non_outlier_gdf.to_file(buff, driver='GPKG')
+                        gpkg_path.write(buff)
+                        del buff
                         print(f"Exported GeoPackage {gpkg_path.get_uri()}")
 
                         tiff_filename = gpkg_filename.replace('.gpkg', '.tif')

@@ -5,6 +5,7 @@ import time
 from enum import Enum, Flag, auto
 from typing import cast, Sequence
 import shutil
+import io
 
 from smart_open import open as sopen
 
@@ -472,6 +473,11 @@ class File:
         return self.storage_provider.open(self.object_name,
                                           mode=mode, buffering=buffering, encoding=encoding, errors=errors,
                                           newline=newline)
+
+    def write(self, buff: io.BytesIO):
+        buff.seek(0)
+        with self.open(mode='wb') as f:
+            f.write(buff.read())
 
     def get_uri(self) -> str:
         return str(self.storage_provider.generate_resource_uri(object_name=self.object_name))

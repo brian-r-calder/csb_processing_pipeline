@@ -54,6 +54,7 @@ class MainWindow:
         ttk.Button(input_frame, text='Browse',
                    command=lambda: MainWindow.open_file_dialog(self.fp_zones_var, [
                        ("Shapefile", "*.shp"),
+                       ("GeoPackage", "*.gpkg"),
                        ("SQLite", "*.sqlite")
                    ])).grid(row=1, column=2,
                                                                                                   padx=5)
@@ -154,7 +155,8 @@ class MainWindow:
         self.tess_button = ttk.Button(options_frame, text='Browse',
                                       command=lambda: MainWindow.open_file_dialog(self.tessellation_shp_var,
                                                                                   [
-                                                                                      ("Shapefile", "*.shp")
+                                                                                      ("Shapefile", "*.shp"),
+                                                                                      ("GeoPackage", "*.gpkg")
                                                                                    ]))
         self.tess_button.grid(row=row_num, column=2, padx=5)
         row_num += 1
