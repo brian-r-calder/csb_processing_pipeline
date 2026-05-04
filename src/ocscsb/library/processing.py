@@ -142,12 +142,15 @@ class Processor:
         self.fp_zones = io.File.init(fp_zone_path)
 
         self.use_fes_model = use_fes_model
-        self.fes_data_path: io.StorageLocation | None = None
+        self.fes_data_path: Path | None = None
         if fes_data_path and fes_data_path != '':
-            self.fes_data_path = io.StorageLocation(fes_data_path, provider=provider)
-        self.fes_yaml_path: io.StorageLocation | None = None
+            # PyFES needs to have its DATASET_DIR env variable be a local path set from a string, so we can't use
+            # io.StorageLocation
+            self.fes_data_path = Path(fes_data_path).absolute()
+        self.fes_yaml_path: Path | None = None
         if fes_yaml_path and fes_yaml_path != '':
-            self.fes_yaml_path = io.StorageLocation(fes_yaml_path, provider=provider)
+            # PyFES needs to read its YAML config from a local file, so we can't use io.StorageLocation
+            self.fes_yaml_path = Path(fes_yaml_path).absolute()
 
         self.master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
         self.master_offsets: pd.DataFrame = self.read_master_offsets()
@@ -1226,7 +1229,7 @@ class Processor:
                     plt.ylabel('Frequency')
                     plt.legend()
                     histo_png: io.File = hist_export_dir.new_file(f"{unique_id}_histogram.png")
-                    plt.savefig(histo_png.open(mode='b'))
+                    plt.savefig(histo_png.open(mode='wb'))
                     plt.close()
 
         print("Completed Step 1.")
