@@ -680,7 +680,7 @@ def get_tile_list(desired_area_filename: str, tile_scheme_filename: str) -> [str
     if source is None:
         print("Unable to open tile scheme file")
         return None
-    driver = ogr.GetDriverByName("MEMORY")
+    driver = ogr.GetDriverByName("MEM")
     intersect = driver.CreateDataSource("memData")
     intersect_lyr = intersect.CreateLayer("mem", geom_type=ogr.wkbPolygon)
     source_layer = source.GetLayer(0)
@@ -724,7 +724,7 @@ def transform_layer(input_layer: ogr.Layer, desired_crs: osr.SpatialReference) -
     """
     target_crs = input_layer.GetSpatialRef()
     coord_trans = osr.CoordinateTransformation(target_crs, desired_crs)
-    driver = ogr.GetDriverByName("MEMORY")
+    driver = ogr.GetDriverByName("MEM")
     out_ds = driver.CreateDataSource("memData")
     out_lyr = out_ds.CreateLayer("out_lyr", geom_type=input_layer.GetGeomType())
     out_defn = out_lyr.GetLayerDefn()

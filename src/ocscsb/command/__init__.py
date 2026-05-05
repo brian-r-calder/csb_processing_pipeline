@@ -61,7 +61,7 @@ def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
     are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
     filtered to be after START_DATE (default: 1970-01-01).
     '''
-    storage: io.StorageLocation = io.StorageLocation(output_location, io.StorageProviderType[provider.upper()])
+    storage: io.StorageLocation = io.StorageLocation(output_location, provider)
 
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 
@@ -74,7 +74,7 @@ def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
         tile_name = row['GRID_ID']
         
         # Check if the CSV file for the current tile already exists
-        if storage.contains(f"{tile_name}.csv"):
+        if storage.contains(f"{tile_name}.csv", ttl_sec=io.DEFAULT_TTL_SEC):
             print(f"[orange]Warning:[/] CSV file for GRID_ID {tile_name} already exists. Skipping download.")
             continue
         

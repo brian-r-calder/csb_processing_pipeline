@@ -1,14 +1,18 @@
 import os
+import tempfile
 from datetime import datetime, timedelta
-import logging
-import sys
 import shutil
-import glob
 import time
 from importlib import resources
+from pathlib import Path
 from typing import Callable
 import traceback as tb
 import gc
+from io import BytesIO
+import contextlib
+
+from osgeo import gdal
+gdal.UseExceptions()
 
 import requests
 import geopandas as gpd
@@ -27,7 +31,7 @@ from shapely.validation import make_valid
 import duckdb
 
 from shapely.ops import unary_union
-from skimage.morphology.binary import binary_dilation, binary_erosion
+from skimage.morphology import dilation, erosion
 from scipy.interpolate import interp1d
 import seaborn as sns
 from sklearn.experimental import enable_iterative_imputer
@@ -37,10 +41,11 @@ from sklearn.preprocessing import StandardScaler
 from scipy.ndimage import uniform_filter1d
 
 from ocscsb.library.fes_model import get_fes_tide, get_lat_separation
-from ocscsb.library import bluetopo
+from ocscsb.library import bluetopo, io
 
 GDAL_VSI_PREFIX: str = '/vsis3/'
 S3_PATH_SEP: str = '/'
+FINAL_PROD_DIR = 'final_products'
 
 # def setup_logging(output_dir):
 #     """Configures logging to print to both console and a file."""
@@ -105,55 +110,80 @@ class Processor:
                  bag_file_path: str,
                  output_dir: str,
                  *,
-                 clean_up_callback: Callable|None = None,
-                 fp_zones: str|None = None,
+                 provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT,
+                 clean_up_callback: Callable | None = None,
+                 fp_zones: str | None = None,
                  use_bluetopo: bool = True,
                  use_fes_model: bool = True,
-                 fes_data_path: str|None = None,
-                 fes_yaml_path: str|None = None,
+                 fes_data_path: str | None = None,
+                 fes_yaml_path: str | None = None,
                  run_analysis: bool = False,
                  export_transits: bool = False,
                  run_final_grid: bool = False,
                  export_gp: bool = False,
                  insert_duckdb: bool = False,
                  export_final_gpkg: bool = False,
-                 tessellation_shp: str|None = None,
+                 tessellation_shp: str | None = None,
                  grid_resolution: float = 10.0,
                  organize_vrt: bool = False):
-        self.title = ''
-        self.csb_directory = os.path.abspath(csb_directory)
-        self.bag_file_path = os.path.abspath(bag_file_path)
-        self.output_dir = os.path.abspath(output_dir)
-        self.clean_up_callback = clean_up_callback
-        if fp_zones is None or fp_zones == '':
-            self.fp_zones = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
-        else:
-            self.fp_zones = os.path.abspath(fp_zones)
+        self.tmp_dir: Path = Path(tempfile.mkdtemp())
+        self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider)
+
         self.use_bluetopo = use_bluetopo
+        self.bag_file_path: io.File | None = None
+        if bag_file_path and bag_file_path != '':
+            self.bag_file_path: io.File = io.File.init(bag_file_path, provider=provider)
+
+        self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider)
+        self.final_products_loc: io.StorageLocation = self.output_dir.sub_location('final_products')
+
+        if fp_zones is None or fp_zones == '':
+            fp_zone_path: str = os.path.abspath(str(resources.files('ocscsb').joinpath('data/tide_zone_polygons.sqlite')))
+        else:
+            fp_zone_path: str = fp_zones
+        self.fp_zones = io.File.init(fp_zone_path)
+
         self.use_fes_model = use_fes_model
-        self.fes_data_path = fes_data_path
-        self.fes_yaml_path = fes_yaml_path
+        self.fes_data_path: Path | None = None
+        if fes_data_path and fes_data_path != '':
+            # PyFES needs to have its DATASET_DIR env variable be a local path set from a string, so we can't use
+            # io.StorageLocation
+            self.fes_data_path = Path(fes_data_path).absolute()
+        self.fes_yaml_path: Path | None = None
+        if fes_yaml_path and fes_yaml_path != '':
+            # PyFES needs to read its YAML config from a local file, so we can't use io.StorageLocation
+            self.fes_yaml_path = Path(fes_yaml_path).absolute()
+
+        self.master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
+        self.master_offsets: pd.DataFrame = self.read_master_offsets()
+
+        self.duckdb_path: Path = self.tmp_dir / 'csb.duckdb'
+
         self.run_analysis = run_analysis
         self.export_transits = export_transits
         self.run_final_grid = run_final_grid
         self.export_gp = export_gp
         self.insert_duckdb = insert_duckdb
         self.export_final_gpkg = export_final_gpkg
-        self.tessellation_shp = tessellation_shp
+        self.tessellation_shp: io.File | None = None
+        if tessellation_shp and tessellation_shp != '':
+            pth = Path(tessellation_shp).absolute()
+            self.tessellation_shp = io.File.from_path(pth)
         self.grid_resolution = grid_resolution
         self.organize_vrt = organize_vrt
+        self.clean_up_callback = clean_up_callback
 
         # setup_logging(output_dir)
         print(f"output_dir is: {output_dir}")
 
-    def load_csb(self, csb_file: str):
+    def load_csb(self, csb_file: io.File) -> gpd.GeoDataFrame:
         print('*****Reading CSB input csv file in chunks*****')
 
         chunk_size = 5_000_000
         processed_chunks = []
 
         # This creates an iterator that yields a DataFrame chunk on each loop
-        with pd.read_csv(csb_file, chunksize=chunk_size, low_memory=False) as reader:
+        with pd.read_csv(csb_file.open(), chunksize=chunk_size, low_memory=False) as reader:
             for i, chunk in enumerate(reader):
                 print(f"Processing chunk {i + 1}...")
 
@@ -188,70 +218,65 @@ class Processor:
         return gdf
 
     def create_convex_hull_and_download_tiles(self,
-                                              csb_data_path, output_dir,
                                               title: str,
-                                              bag_file_path: str,
-                                              use_bluetopo=True):
+                                              csb_file: io.File) -> io.File:
         """
         Loads CSB data, builds a convex hull, and writes it to a shapefile.
-        If use_bluetopo is True, it creates a dedicated Modeling folder,
+        As part of doing so, creates a dedicated Modeling folder,
         downloads BlueTopo tiles, copies them to a separate archive folder,
         and then builds a VRT from all GeoTIFF files found recursively in that folder.
-        If use_bluetopo is False, it returns the user‐provided BAG_filepath.
         """
 
         # Load CSB data and create convex hull
-        csb_data = pd.read_csv(csb_data_path)
+        csb_data = pd.read_csv(csb_file.open())
         gdf = gpd.GeoDataFrame(csb_data, geometry=gpd.points_from_xy(csb_data.lon, csb_data.lat))
         gdf = gdf.set_crs(4326, allow_override=True)
         convex_hull_polygon = gdf.unary_union.convex_hull
         convex_hull_gdf = gpd.GeoDataFrame(geometry=[convex_hull_polygon], crs=gdf.crs)
-        convex_hull_shapefile = os.path.join(output_dir, "convex_hull_polygon.shp")
+        convex_hull_shapefile = self.tmp_dir / 'convex_hull_polygon.shp'
         convex_hull_gdf.to_file(convex_hull_shapefile)
-        print(f"Convex hull shapefile written to: {convex_hull_shapefile}")
+        convex_hull_shapefile_ = str(convex_hull_shapefile)
+        print(f"Convex hull shapefile written to: {convex_hull_shapefile_}")
 
-        if use_bluetopo:
-            # Create the 'Modeling' folder for storing the VRT referencing GeoTIFFs in S3
-            bluetopo_tiles_dir = os.path.join(output_dir, "Modeling")
-            print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir}...")
-            os.makedirs(bluetopo_tiles_dir, exist_ok=True)
+        # Create the 'Modeling' folder for storing the VRT referencing GeoTIFFs in S3
+        bluetopo_tiles_dir = self.tmp_dir / 'Modeling'
+        bluetopo_tiles_dir_ = str(bluetopo_tiles_dir)
+        print(f"Using bluetopo_tiles_dir: {bluetopo_tiles_dir_}...")
+        bluetopo_tiles_dir.mkdir(exist_ok=True)
 
-            # Identify BlueTopo tiles that correspond to this convex hull
-            _, _, _, _, tiles = bluetopo.identify_tiles(bluetopo_tiles_dir, convex_hull_shapefile)
-            tile_files = []
-            for tile in tiles:
-                tile_files.append(f"{GDAL_VSI_PREFIX}{tile.bucket}{S3_PATH_SEP}{tile.object}")
-            # Build a VRT from tiles stored in S3, without needing to download them.
-            vrt_dir = os.path.join(output_dir, f"BlueTopo_VRT_{title}")
-            os.makedirs(vrt_dir, exist_ok=True)
-            vrt_path = os.path.join(vrt_dir, f"merged_tiles_{title}.vrt")
-            with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
-                gdal.BuildVRT(vrt_path, tile_files)
-            print(f"Created VRT at {vrt_path}")
-            return vrt_path
+        # Identify BlueTopo tiles that correspond to this convex hull
+        _, _, _, _, tiles = bluetopo.identify_tiles(bluetopo_tiles_dir_, convex_hull_shapefile_)
+        tile_files = []
+        for tile in tiles:
+            tile_files.append(f"{GDAL_VSI_PREFIX}{tile.bucket}{S3_PATH_SEP}{tile.object}")
+        # Build a VRT from tiles stored in S3, without needing to download them.
+        vrt_dir = self.tmp_dir / f"BlueTopo_VRT_{title}"
+        vrt_dir.mkdir(exist_ok=True)
+        vrt_path = vrt_dir / f"merged_tiles_{title}.vrt"
+        with gdal.config_option('AWS_NO_SIGN_REQUEST', 'YES'):
+            gdal.BuildVRT(vrt_path, tile_files)
+        print(f"Created VRT at {str(vrt_path)}")
+
+        return io.File.from_path(vrt_path)
+
+    def read_master_offsets(self) -> pd.DataFrame:
+        """Reads the master offsets from a CSV file stored at `self.master_offset_file`."""
+        if self.master_offset_file.exists():
+            print(f"Found existing master offsets file at: {self.master_offset_file.get_uri()}")
+            return pd.read_csv(self.master_offset_file.open())
         else:
-            # If not using automated download, assume bag_file_path is provided by the user.
-            return bag_file_path
-
-    def read_master_offsets(self):
-        """Reads the master offsets from a CSV file."""
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-
-        if os.path.exists(MASTER_OFFSET_FILE):
-            return pd.read_csv(MASTER_OFFSET_FILE)
-        else:
-            return pd.DataFrame(columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range', 'tile_name'])
+            print("No master_offsets.csv found. Will create a new one.")
+            return pd.DataFrame(
+                columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
+                         'tile_name'])
 
     def update_master_offsets(self,
+                              title: str,
                               unique_id, platform_name, new_offset, std_dev, date_range):
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-        master_offsets = self.read_master_offsets()
-
-
         accuracy_score = 1 / std_dev if std_dev != 0 else 0
 
         #print('checking for existing offset by unique_id and platform_name')
-        existing_index = master_offsets[(master_offsets['unique_id'] == unique_id)].index
+        existing_index = self.master_offsets[(self.master_offsets['unique_id'] == unique_id)].index
 
         new_row = pd.DataFrame([{
             'unique_id': unique_id,
@@ -260,21 +285,20 @@ class Processor:
             'std_dev': std_dev,
             'accuracy_score': accuracy_score,
             'date_range': date_range,
-            'tile_name': self.title
+            'tile_name': title
         }])
 
         # Exclude empty or all-NA entries before concatenation
         new_row = new_row.dropna(how='all')
 
         if existing_index.empty:
-            master_offsets = pd.concat([master_offsets, new_row], ignore_index=True)
+            self.master_offsets = pd.concat([self.master_offsets, new_row], ignore_index=True)
         else:
-            if master_offsets.loc[existing_index[0], 'accuracy_score'] <= accuracy_score:
-                master_offsets.loc[existing_index[0], list(new_row.columns)] = new_row.iloc[0]
+            if self.master_offsets.loc[existing_index[0], 'accuracy_score'] <= accuracy_score:
+                self.master_offsets.loc[existing_index[0], list(new_row.columns)] = new_row.iloc[0]
 
         try:
-            master_offsets.to_csv(MASTER_OFFSET_FILE, index=False)
-            #print(f"Master offsets updated successfully in {MASTER_OFFSET_FILE}.")
+            self.master_offsets.to_csv(self.master_offset_file.open(mode='wb'), index=False)
         except Exception as e:
             print(f"Failed to update master offsets: {e}")
 
@@ -341,7 +365,11 @@ class Processor:
         return trimmed_df
 
     def create_survey_outline(self,
-                              raster_path, output_dir, title, desired_resolution=8, dilation_iterations=3, erosion_iterations=2):
+                              title: str,
+                              raster_path: Path, *,
+                              desired_resolution: float = 8,
+                              dilation_iterations: int = 3,
+                              erosion_iterations: int = 2) -> Path:
         print("starting create_survey_outline() function")
         with rasterio.open(raster_path) as raster:
             # Resample the raster
@@ -360,9 +388,9 @@ class Processor:
 
             # Apply dilation and erosion
             for _ in range(dilation_iterations):
-                binary_mask = binary_dilation(binary_mask)
+                binary_mask = dilation(binary_mask)
             for _ in range(erosion_iterations):
-                binary_mask = binary_erosion(binary_mask)
+                binary_mask = erosion(binary_mask)
 
             # Ensure binary_mask is of type uint8
             binary_mask = binary_mask.astype(np.uint8)
@@ -373,10 +401,6 @@ class Processor:
                 (raster.height / data.shape[-2])
             )
 
-            #polygons = [shape(geom) for geom, val in shapes(binary_mask, mask=binary_mask, transform=transform) if val == 1]
-
-            # Perform unary union
-            #unified_geometry = unary_union(polygons)
             # Generate polygons from the binary mask and make them valid
             polygons = [make_valid(shape(geom)) for geom, val in shapes(binary_mask, mask=binary_mask, transform=transform) if val == 1]
 
@@ -396,10 +420,10 @@ class Processor:
             geo_df['geometry'] = geo_df.geometry.apply(lambda geom: geom.buffer(0) if not geom.is_valid else geom)
 
             # Save to a shapefile
-            bathy_polygon_shp = f"{output_dir}/{title}_bathy_polygon.shp"
+            bathy_polygon_shp = self.tmp_dir / f"{title}_bathy_polygon.shp"
             geo_df.to_file(bathy_polygon_shp, driver='ESRI Shapefile')
 
-            print('Bathymetry polygon shapefile created.')
+            print(f"Bathymetry polygon shapefile {str(bathy_polygon_shp)} created.")
             return bathy_polygon_shp
 
     def apply_fes_tides(self, gdf):
@@ -435,8 +459,8 @@ class Processor:
         print("***** FES tide correction complete. Depths are referenced to approx. LAT. *****")
         return gdf
 
-    def tides(self, csb_file: str):
-        gdf = self.load_csb(csb_file)
+    def tides(self, csb_file: io.File) -> pd.DataFrame:
+        gdf: gpd.GeoDataFrame = self.load_csb(csb_file)
 
         if self.use_fes_model:
             # --- Route to the new FES model function ---
@@ -452,7 +476,7 @@ class Processor:
             # --- Route to the original NOAA zoned tide logic ---
             print('CSB data from csv file loaded. Starting NOAA tide correction')
 
-            zones = gpd.read_file(self.fp_zones)
+            zones = gpd.read_file(self.fp_zones.open())
             join = gpd.sjoin(gdf, zones, how='inner', predicate='within')
             join = join.astype({'time': 'datetime64[us]'})
             join = join.sort_values('time')
@@ -551,24 +575,24 @@ class Processor:
 
         return csb_corr
 
-    def extract_bag(self, bag_file):
+    def extract_bag(self, title: str, bag_file: io.File) -> tuple[Path, Path]:
         print("starting BAGextract() function")
-        BAG_filepath = os.path.abspath(bag_file)
-        print("DEBUG - BAG_filepath:", bag_file)
+        print("DEBUG - bag_file: ", bag_file.get_uri())
         print('*****Starting to import reference bathy*****')
 
-        output_raster_wgs84 = os.path.join(self.output_dir, self.title + '_wgs84.tif')
-        temp_vrt_path = os.path.join(self.output_dir, 'temp_for_warp.vrt')
+        output_raster_wgs84 = self.tmp_dir / f"{title}_wgs84.tif"
 
         print("Warping input raster to standard WGS84 (EPSG:4269)...")
 
-        input_for_warp = BAG_filepath
+        input_for_warp = bag_file.get_gdal_vsi_path()
 
         # For BAG files, we first create a VRT to select the depth and uncertainty bands
-        if BAG_filepath.lower().endswith('.bag'):
+        # if BAG_filepath.lower().endswith('.bag'):
+        if bag_file.get_suffix() == '.bag':
             print("BAG file detected, creating temporary VRT to select bands 1 and 2...")
             # gdal.BuildVRT is the correct place to use bandList
-            gdal.BuildVRT(temp_vrt_path, BAG_filepath, bandList=[1, 2])
+            temp_vrt_path: Path = self.tmp_dir / 'temp_for_warp.vrt'
+            gdal.BuildVRT(temp_vrt_path, bag_file.get_gdal_vsi_path(), bandList=[1, 2])
             input_for_warp = temp_vrt_path
 
         # BIGTIFF=YES' to creationOptions to allow files larger than 4GB
@@ -584,14 +608,10 @@ class Processor:
                       creationOptions=['COMPRESS=LZW', 'BIGTIFF=YES'],
                       dstNodata=1000000)
 
-        # Clean up the temporary VRT file if it was created
-        if os.path.exists(temp_vrt_path):
-            os.remove(temp_vrt_path)
-
         print("Reference raster prepared successfully.")
 
         # Call create_survey_outline to generate the bathymetry polygon shapefile
-        bathy_polygon_shp = self.create_survey_outline(output_raster_wgs84, self.output_dir, self.title)
+        bathy_polygon_shp: Path = self.create_survey_outline(title, output_raster_wgs84)
 
         return output_raster_wgs84, bathy_polygon_shp
 
@@ -631,12 +651,17 @@ class Processor:
 
         return processed_samples
 
-    def derive_draft(self, csb_file, bag_file, master_offsets_df, report=None):  # Added report default for safety
-        output_raster, raster_boundary_shp = self.extract_bag(bag_file)
-        csb_corr = self.tides(csb_file)
+    def derive_draft(self,
+                     title: str,
+                     csb_file: io.File,
+                     bag_file: io.File, *,
+                     report=None) -> pd.DataFrame:
+        output_raster, raster_boundary_shp = self.extract_bag(title, bag_file)
+        csb_corr: pd.DataFrame = self.tides(csb_file)
 
-        vessels_with_offsets = master_offsets_df['unique_id'].unique().tolist()
-        if report: report.add_statistic("Vessels with existing offsets", len(vessels_with_offsets))
+        vessels_with_offsets = self.master_offsets['unique_id'].unique().tolist()
+        if report:
+            report.add_statistic("Vessels with existing offsets", len(vessels_with_offsets))
 
         raster_boundary = gpd.read_file(raster_boundary_shp)
         raster_boundary['geometry'] = raster_boundary['geometry'].apply(
@@ -710,7 +735,8 @@ class Processor:
                 out.loc[:, 'count'] = out['count'].fillna(0)
                 out.loc[(out['mean'] > 3) | (out['mean'] < -11), ['mean', 'std', 'count']] = [0, 999, 0]
                 out.loc[(out['std'] > 7), ['mean', 'std', 'count']] = [0, 999, 0]
-                out.to_csv(os.path.join(self.output_dir, 'VESSEL_OFFSETS_csb_corr_' + self.title + '.csv'), mode='a')
+                vessel_offsets_file: io.File = self.output_dir.new_file(f"VESSEL_OFFSETS_csb_corr_{title}.csv")
+                out.to_csv(vessel_offsets_file.open(mode='ab'))
 
                 platform_mapping = filtered_csb_corr[['unique_id', 'platform_name']].drop_duplicates()
                 out_with_platform = out.merge(platform_mapping, on='unique_id', how='left')
@@ -724,22 +750,17 @@ class Processor:
                     new_offset = row['mean']
                     std_dev = row['std']
                     date_range = date_ranges.get(unique_id, ("19700101", "19700101"))
-                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, self.title)
+                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, title)
             except Exception as e:
                 print(f"Unexpected error encountered creating aggregation dataframe: {e}")
 
         return csb_corr
 
-    def insert_into_duckdb(self, gdf, duckdb_path):
+    def insert_into_duckdb(self, gdf: gpd.GeoDataFrame):
         """
         Inserts (or appends) data, automatically upgrading the table schema if necessary.
         -- FINAL, ROBUST VERSION --
         """
-        # Ensure the directory for the DuckDB file exists.
-        duckdb_dir = os.path.dirname(duckdb_path)
-        if not os.path.exists(duckdb_dir):
-            os.makedirs(duckdb_dir, exist_ok=True)
-
         df = gdf.copy()
         if 'geometry' in df.columns:
             df['wkb_geom'] = df['geometry'].apply(lambda geom: geom.wkb if geom is not None else None)
@@ -767,7 +788,7 @@ class Processor:
         df = df[master_columns]  # Ensure consistent order
 
         try:
-            with duckdb.connect(database=duckdb_path, read_only=False) as con:
+            with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
                 # Check if the 'csb' table exists
                 table_exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='csb'").fetchone()
 
@@ -794,18 +815,20 @@ class Processor:
                 con.register("temp_df", df)
                 con.execute(f"INSERT INTO csb ({col_list_for_insert}) SELECT * FROM temp_df")
 
-            print(f"Data successfully appended to DuckDB table at {duckdb_path}.")
+            print(f"Data successfully appended to DuckDB table at {str(self.duckdb_path)}.")
         except Exception as e:
             print(f"CRITICAL ERROR inserting into DuckDB: {e}")
             raise e
 
-    def draft_corr(self, csb_file, bag_file, master_offsets_df):
-        csb_corr = self.derive_draft(csb_file, bag_file, master_offsets_df)
+    def draft_corr(self,
+                   title: str,
+                   csb_file: io.File,
+                   bag_file: io.File) -> gpd.GeoDataFrame:
+        csb_corr: pd.DataFrame = self.derive_draft(title, csb_file, bag_file)
 
         # Merge the CSB data with the master offsets based on unique vessel ID
         # This will now include any newly derived offsets from the step above
-        master_offsets_updated = self.read_master_offsets()  # Read the potentially updated file
-        csb_corr1 = csb_corr.merge(master_offsets_updated, on='unique_id', how='left')
+        csb_corr1 = csb_corr.merge(self.master_offsets, on='unique_id', how='left')
 
         # Apply the offset correction
         # Fill missing offsets with 0 so the calculation doesn't fail
@@ -821,25 +844,35 @@ class Processor:
         # Instead of immediately exporting to geopackage, return the processed GeoDataFrame.
         return csb_corr1
 
-    def rasterize_csb(self, csb_file, bag_file, master_offsets_df):
-        csb_corr1 = self.draft_corr(csb_file, bag_file, master_offsets_df)
+    def rasterize_csb(self,
+                      title: str,
+                      csb_file: io.File,
+                      bag_file: io.File):
+        csb_corr1: gpd.GeoDataFrame = self.draft_corr(title, csb_file, bag_file)
 
         # Insert processed data into DuckDB.
         if self.insert_duckdb:
-            duckdb_path = os.path.join(self.output_dir, "csb.duckdb")
-            self.insert_into_duckdb(csb_corr1, duckdb_path)
+            self.insert_into_duckdb(csb_corr1)
 
         # Optionally export as geopackage if the checkbox is selected.
         if self.export_gp:
-            gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
+            gpkg_path: io.File = self.output_dir.new_file(f"csb_processed_{title}.gpkg")
             print('*****Exporting processed CSB data to geopackage*****')
-            csb_corr1.to_file(gpkg_path, driver='GPKG', layer='csb')
-            print(f"Geopackage exported to {gpkg_path}")
+            # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+            buff = BytesIO()
+            csb_corr1.to_file(buff, driver='GPKG', layer='csb')
+            gpkg_path.write(buff)
+            del buff
+            print(f"Geopackage exported to {gpkg_path.get_uri()}")
 
         return csb_corr1
 
     # --- START: FINAL GRIDDING AND EXPORT FUNCTIONS ---
-    def points_to_raster_average(self, gdf, out_raster_path, value_col='depth', nodata=1000000):
+    def points_to_raster_average(self,
+                                 gdf: gpd.GeoDataFrame,
+                                 out_raster_path: io.File,
+                                 value_col: str = 'depth',
+                                 nodata: int = 1000000):
         """
         Creates a GeoTIFF by averaging point values within each grid cell.
         -- MODIFIED for ROBUSTNESS --
@@ -848,16 +881,12 @@ class Processor:
         if gdf.crs is None:
             raise ValueError("GeoDataFrame has no CRS. Please set or reproject first.")
 
-        # --- Safety Check: Ensure the output directory exists before writing ---
-        output_dir = os.path.dirname(out_raster_path)
-        os.makedirs(output_dir, exist_ok=True)
-
         x_min, y_min, x_max, y_max = gdf.total_bounds
         width = int(np.ceil((x_max - x_min) / resolution))
         height = int(np.ceil((y_max - y_min) / resolution))
 
         if width <= 0 or height <= 0:
-            print(f"Warning: Raster dimensions are zero or negative for {os.path.basename(out_raster_path)}. Skipping.")
+            print(f"Warning: Raster dimensions are zero or negative for {out_raster_path.object_name}. Skipping.")
             return
 
         transform = from_origin(x_min, y_max, resolution, resolution)
@@ -885,7 +914,7 @@ class Processor:
         avg_array[valid_mask] = sum_array[valid_mask] / count_array[valid_mask]
 
         with rasterio.open(
-                out_raster_path, 'w', driver='GTiff',
+                out_raster_path.open(mode='wb'), mode='w', driver='GTiff',
                 height=height, width=width, count=1,
                 dtype=np.float32, crs=gdf.crs.to_string(),
                 transform=transform, nodata=nodata,
@@ -895,78 +924,115 @@ class Processor:
 
         print(f"Final gridded GeoTIFF created at {out_raster_path}")
 
-    def organize_by_epsg(self, input_dir):
+    def organize_by_epsg(self, input_dir: io.StorageLocation):
         """
         Moves TIFF files into subdirectories named by their EPSG code.
         """
         print("\nOrganizing final GeoTIFFs by EPSG code...")
-        for fn in os.listdir(input_dir):
-            if not fn.lower().endswith(('.tif', '.tiff')):
-                continue
-
-            src_path = os.path.join(input_dir, fn)
-            if not os.path.isfile(src_path): continue
+        for fn in input_dir.list_files(suffix='.tif*'):
 
             try:
-                with rasterio.open(src_path) as src:
+                with rasterio.open(fn.open(mode='rb'), driver='GTiff') as src:
                     epsg = src.crs.to_epsg()
             except Exception as e:
-                print(f"[ERROR] could not open {fn}: {e}")
+                print(f"[ERROR] could not open {fn.get_uri()}: {e}")
                 continue
 
             if epsg is None:
-                print(f"[WARN] {fn} has no recognized EPSG code, skipping.")
+                print(f"[WARN] {fn.get_uri()} has no recognized EPSG code, skipping.")
                 continue
 
-            out_folder = os.path.join(input_dir, f"EPSG_{epsg}")
-            os.makedirs(out_folder, exist_ok=True)
+            out_folder: io.StorageLocation = input_dir.sub_location(f"EPSG_{epsg}")
+            fn.move(out_folder)
+            print(f"Moved {fn.get_uri()} → {out_folder.get_uri()}")
 
-            dest_path = os.path.join(out_folder, fn)
-            shutil.move(src_path, dest_path)
-            print(f"Moved {fn} → {out_folder}")
+    @staticmethod
+    def create_vrts_and_ovr(working_path: Path, vrt_name: str, gdal_paths: list[str], *,
+                            ctx_path: Path | None = None) -> tuple[Path, Path]:
+        """
+        Create VRT and overviews
 
-    def create_vrts_for_epsg_folders(self, base_dir):
+        Parameters
+        ----------
+        working_path
+            Path representing the directory in which to create VRT
+        vrt_name
+            Name of VRT file to create
+        gdal_paths
+            List of strings representing GDAL VSI paths (or relative file paths, i.e., file names)
+        ctx_path
+            Path to change the current directory to before creating VRT or overviews. If none, the current directory
+            will be used.
+
+        Returns
+        -------
+        Tuple[Path of VRT, Path of VRT overviews]
+        """
+        if ctx_path:
+            cm = contextlib.chdir(ctx_path)
+        else:
+            cm = contextlib.nullcontext()
+        with cm:
+            vrt_path = working_path / vrt_name
+            gdal.BuildVRT(vrt_path, gdal_paths, strict=True)
+            print("Building overviews for VRT...")
+            ds = gdal.Open(vrt_path)
+            if ds:
+                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+                ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+                ds = None
+            ovr_name = f"{vrt_name}.ovr"
+            ovr_path = working_path / ovr_name
+            return vrt_path, ovr_path
+
+    def create_vrts_for_epsg_folders(self, base_dir: io.StorageLocation):
         """
         Scans for 'EPSG_' subfolders and builds a VRT for the TIFFs in each.
         """
         print("\nBuilding VRTs for each EPSG folder...")
-        for folder_name in os.listdir(base_dir):
-            if folder_name.startswith("EPSG_") and os.path.isdir(os.path.join(base_dir, folder_name)):
-                directory = os.path.join(base_dir, folder_name)
-                pattern = os.path.join(directory, "*.tif")
-                files = glob.glob(pattern)
-
-                if not files:
-                    print(f"No GeoTIFFs found in {directory}, skipping VRT creation.")
-                    continue
-
-                print(f"Found {len(files)} files in {directory}. Building VRT...")
-                vrt_filename = os.path.join(directory, f"mosaic_{folder_name}.vrt")
-
-                gdal.BuildVRT(vrt_filename, files)
-                print("VRT created:", vrt_filename)
-
-                # Build overviews
-                print("Building overviews for VRT...")
-                ds = gdal.Open(vrt_filename)
-                if ds:
-                    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
-                    ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
-                    ds = None
-                    print(f"Overviews built for {vrt_filename}")
+        for directory in base_dir.list_sub_paths(pattern='EPSG_'):
+            files = directory.list_files(suffix='.tif*')
+            print(f"Found {len(files)} files in {directory.get_uri()}. Building VRT...")
+            vrt_name = f"mosaic_{directory.name}.vrt"
+            # Get GDAL-compatible path to each file
+            gdal_paths = [f.get_gdal_vsi_path(relative=True) for f in files]
+            # First, create VRT in a temporary file
+            if directory.provider_type == io.StorageProviderType.LOCAL_FILE:
+                # Create temporary VRT in directory so that BuildVRT will use relative paths
+                vrt_path = Path(directory.location)
+                ctx_path = vrt_path
+            else:
+                vrt_path = self.tmp_dir
+                ctx_path = None
+            tmp_vrt, tmp_ovr = Processor.create_vrts_and_ovr(vrt_path, vrt_name, gdal_paths, ctx_path=ctx_path)
+            # Now, copy temporary VRT to directory
+            vrt_file = directory.new_file(vrt_name)
+            if str(tmp_vrt) != vrt_file.get_uri():
+                # Only copy tmp_vrt to vrt_file if they are not already the same file
+                with tmp_vrt.open(mode='r') as r:
+                    with vrt_file.open(mode='w') as w:
+                        w.write(r.read())
+            print(f"VRT created: {vrt_file.get_uri()}")
+            # Copy overviews to directory
+            if not tmp_ovr.exists():
+                raise ProcessingException(f"Expected .ovr to exist for VRT {str(tmp_vrt)}, but it did not.")
+            ovr_file = directory.new_file(tmp_ovr.name)
+            if str(tmp_ovr) != ovr_file.get_uri():
+                # Only copy tmp_ovr to ovr_file if they are not already the same file
+                with tmp_ovr.open(mode='rb') as r:
+                    with ovr_file.open(mode='wb') as w:
+                        w.write(r.read())
+            print(f"Overviews built for {vrt_file.get_uri()}")
 
     def run_final_gridding_and_export(self):
         """
         Main function for the final gridding and export stage.
         """
         print("\n***** Starting Final Gridding & Export Stage *****")
-        db_path = os.path.join(self.output_dir, "csb.duckdb")
-        output_folder = os.path.join(self.output_dir, "final_products")
-        os.makedirs(output_folder, exist_ok=True)
-        with duckdb.connect(database=db_path, read_only=False) as con:
-            if self.tessellation_shp is not None and os.path.exists(self.tessellation_shp):
-                print(f"Using tessellation scheme: {self.tessellation_shp}")
-                polygons_gdf = gpd.read_file(self.tessellation_shp)
+        with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
+            if self.tessellation_shp is not None and self.tessellation_shp.exists():
+                print(f"Using tessellation scheme: {self.tessellation_shp.get_uri()}")
+                polygons_gdf = gpd.read_file(self.tessellation_shp.open(mode='rb'))
                 if polygons_gdf.crs.to_epsg() != 4326:
                     polygons_gdf = polygons_gdf.to_crs(epsg=4326)
 
@@ -1004,10 +1070,14 @@ class Processor:
                         continue
 
                     if self.export_final_gpkg:
-                        gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
+                        gpkg_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
-                        points_gdf_4326.to_file(gpkg_path, driver="GPKG")
-                        print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path}")
+                        # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                        buff = BytesIO()
+                        points_gdf_4326.to_file(buff, driver="GPKG")
+                        gpkg_path.write(buff)
+                        del buff
+                        print(f"  Saved points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                     lat_c, lon_c = poly_geom.centroid.y, poly_geom.centroid.x
                     try:
@@ -1020,7 +1090,7 @@ class Processor:
                         print(f"  Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                         if not points_for_raster.empty:
-                            tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
+                            tif_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_gridded.tif")
                             self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     except ValueError as e:
                         print(f"  Skipping raster for {polygon_id}: {e}")
@@ -1057,10 +1127,14 @@ class Processor:
                 )
 
                 if self.export_final_gpkg:
-                    gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
+                    gpkg_path: io.File = self.final_products_loc.new_file('csb_final_points.gpkg')
                     print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
-                    points_gdf_4326.to_file(gpkg_path, driver="GPKG")
-                    print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path}")
+                    # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                    buff = BytesIO()
+                    points_gdf_4326.to_file(buff, driver="GPKG")
+                    gpkg_path.write(buff)
+                    del buff
+                    print(f"Saved final points GeoPackage (EPSG:4326): {gpkg_path.get_uri()}")
 
                 try:
                     world_centroid = points_gdf_4326.unary_union.centroid
@@ -1074,7 +1148,7 @@ class Processor:
                     print(f"Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                     if not points_for_raster.empty:
-                        tif_path = os.path.join(output_folder, "csb_final_gridded.tif")
+                        tif_path: io.File = self.final_products_loc.new_file('csb_final_gridded.tif')
                         self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     else:
                         print("No valid non-outlier points to create final raster.")
@@ -1083,56 +1157,17 @@ class Processor:
                     print(f"Could not process single file output: {e}")
 
         if self.organize_vrt:
-            self.organize_by_epsg(output_folder)
-            self.create_vrts_for_epsg_folders(output_folder)
+            self.organize_by_epsg(self.final_products_loc)
+            self.create_vrts_for_epsg_folders(self.final_products_loc)
 
         print("***** Final Gridding & Export Stage Complete *****")
-
-    def cleanup_interim_files(self):
-        """
-        Safely removes all temporary and intermediate files and folders created during processing.
-        """
-        print(f"\n--- Cleaning up interim files for {self.title} ---")
-
-        # List of folder paths to remove
-        folders_to_remove = [
-            os.path.join(self.output_dir, "Modeling")
-        ]
-
-        for folder in folders_to_remove:
-            try:
-                if os.path.exists(folder):
-                    shutil.rmtree(folder)
-                    print(f"Removed folder: {folder}")
-            except Exception as e:
-                print(f"Error removing folder {folder}: {e}")
-
-        # List of file patterns to remove
-        file_patterns_to_remove = [
-            os.path.join(self.output_dir, f"{self.title}_5m_MLLW.tif"),
-            os.path.join(self.output_dir, f"{self.title}_wgs84.tif"),
-            os.path.join(self.output_dir, f"{self.title}_intermediate.tif"),
-            os.path.join(self.output_dir, "convex_hull_polygon.*"),
-            os.path.join(self.output_dir, f"{self.title}_bathy_polygon.*")
-        ]
-
-        for pattern in file_patterns_to_remove:
-            files = glob.glob(pattern)
-            for f in files:
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                        print(f"Removed file: {f}")
-                except Exception as e:
-                    print(f"Error removing file {f}: {e}")
 
     # --- END: FINAL GRIDDING AND EXPORT FUNCTIONS ---
 
     # --- START: POST-PROCESSING ANALYSIS FUNCTIONS ---
 
-    def run_histograms_calibration_points(self, db_path, hist_export_dir):
+    def run_histograms_calibration_points(self, db_path, hist_export_dir: io.StorageLocation):
         print("Starting Post-Processing Step 1: Histograms and Calibration Points")
-        os.makedirs(hist_export_dir, exist_ok=True)
 
         with duckdb.connect(database=db_path, read_only=False) as con:
             columns_query = "DESCRIBE csb"
@@ -1164,8 +1199,8 @@ class Processor:
 
                 if not data_df.empty:
                     platform_name = data_df['platform_name_x'].iloc[0]
-                    output_csv_path = os.path.join(hist_export_dir, f"{unique_id}_csb_offset_analysis.csv")
-                    data_df.to_csv(output_csv_path)
+                    output_csv_path: io.File = hist_export_dir.new_file(f"{unique_id}_csb_offset_analysis.csv")
+                    data_df.to_csv(output_csv_path.open(mode='wb'))
 
                     plt.figure(figsize=(10, 6))
                     sns.histplot(data_df['diff'], bins=30, kde=True, color="skyblue", label='Histogram')
@@ -1183,7 +1218,8 @@ class Processor:
                     plt.xlabel('Diff')
                     plt.ylabel('Frequency')
                     plt.legend()
-                    plt.savefig(os.path.join(hist_export_dir, f"{unique_id}_histogram.png"))
+                    histo_png: io.File = hist_export_dir.new_file(f"{unique_id}_histogram.png")
+                    plt.savefig(histo_png.open(mode='wb'))
                     plt.close()
 
         print("Completed Step 1.")
@@ -1231,7 +1267,7 @@ class Processor:
 
         print("Completed Step 2.")
 
-    def run_export_transits(self, db_path, exports_folder):
+    def run_export_transits(self, db_path, exports_folder: io.StorageLocation):
         print("Starting Post-Processing Step 3: Outlier Detection & Transit ID Assignment")
 
         # --- Helper Functions ---
@@ -1282,7 +1318,7 @@ class Processor:
                 return full_smoothed_depth, outlier_count
             return data[~outliers], outlier_count
 
-        def create_geotiff(gdf, filename, resolution=8):
+        def create_geotiff(gdf, filename: io.File, resolution=8):
             try:
                 bounds = gdf.total_bounds
                 x_min, y_min, x_max, y_max = bounds
@@ -1303,7 +1339,7 @@ class Processor:
                     'compress': 'lzw',
                     'interleave': 'band'
                 }
-                with rasterio.open(filename, "w", **out_meta) as dest:
+                with rasterio.open(filename.open(mode='wb'), mode='w', **out_meta) as dest:
                     for idx, col in enumerate(['depth', 'uncertainty'], start=1):
                         array = np.full((y_res, x_res), out_meta['nodata'], dtype='float32')
                         for point, value in zip(gdf.geometry, gdf[col]):
@@ -1331,7 +1367,6 @@ class Processor:
             df['transit_id'] = transit_ids
             return df
 
-        os.makedirs(exports_folder, exist_ok=True)
         MAX_HOURS_GAP = 4
         MAX_DAYS_DURATION = 7
         with duckdb.connect(database=db_path, read_only=False) as con:
@@ -1405,7 +1440,7 @@ class Processor:
                     print(f"    Outliers detected in Pass 3: {outlier_count_3}")
                     group['Final_Smoothed_Depth'] = final_smoothed_depth
 
-                    plot_filename = os.path.join(exports_folder, f"{unique_id}_{transit_id}_outlier_plot.png")
+                    plot_filename: io.File = exports_folder.new_file(f"{unique_id}_{transit_id}_outlier_plot.png")
                     fig, ax = plt.subplots(figsize=(12, 6))
                     mask_valid = group['Outlier'] == False
                     mask_outlier = group['Outlier'] == True
@@ -1417,9 +1452,9 @@ class Processor:
                     ax.set_xlabel("Record Index")
                     ax.set_ylabel("Depth")
                     ax.legend()
-                    plt.savefig(plot_filename)
+                    plt.savefig(plot_filename.open(mode='wb'))
                     plt.close()
-                    print(f"    Saved outlier plot to {plot_filename}")
+                    print(f"    Saved outlier plot to {plot_filename.get_uri()}")
 
                     updates = []
                     for idx, row in group.iterrows():
@@ -1475,22 +1510,24 @@ class Processor:
                             print(f"Could not determine NAD83 UTM zone for lat={avg_lat}, lon={avg_lon}: {ve}")
                             continue
 
-                        zone_folder = os.path.join(exports_folder, f"zone_{epsg_zone}")
-                        os.makedirs(zone_folder, exist_ok=True)
+                        zone_folder: io.StorageLocation = exports_folder.sub_location(f"zone_{epsg_zone}")
                         non_outlier_gdf.to_crs(epsg=epsg_zone, inplace=True)
 
                         start_date = group['time'].min().strftime('%Y%m%d%H%M%S')
                         end_date = group['time'].max().strftime('%Y%m%d%H%M%S')
                         gpkg_filename = f"{unique_id}_{transit_id}_{start_date}_{end_date}.gpkg"
-                        gpkg_path = os.path.join(zone_folder, gpkg_filename)
-
-                        non_outlier_gdf.to_file(gpkg_path, driver='GPKG')
-                        print(f"Exported GeoPackage {gpkg_path}")
+                        gpkg_path: io.File = zone_folder.new_file(gpkg_filename)
+                        # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
+                        buff = BytesIO()
+                        non_outlier_gdf.to_file(buff, driver='GPKG')
+                        gpkg_path.write(buff)
+                        del buff
+                        print(f"Exported GeoPackage {gpkg_path.get_uri()}")
 
                         tiff_filename = gpkg_filename.replace('.gpkg', '.tif')
-                        tiff_path = os.path.join(zone_folder, tiff_filename)
+                        tiff_path: io.File = zone_folder.new_file(tiff_filename)
                         create_geotiff(non_outlier_gdf, tiff_path)
-                        print(f"Exported GeoTIFF {tiff_path}")
+                        print(f"Exported GeoTIFF {tiff_path.get_uri()}")
                         del gdf
 
                     del group
@@ -1500,77 +1537,59 @@ class Processor:
 
     # --- END: POST-PROCESSING ANALYSIS FUNCTIONS ---
 
-    def run(self):
-        start_time = time.time()
-        # --- Load master offsets once at the start ---
-        MASTER_OFFSET_FILE = os.path.join(self.output_dir, "master_offsets.csv")
-        if os.path.exists(MASTER_OFFSET_FILE):
-            print(f"Found existing master offsets file at: {MASTER_OFFSET_FILE}")
-            master_offsets_df = pd.read_csv(MASTER_OFFSET_FILE)
-        else:
-            print("No master_offsets.csv found. Will create a new one.")
-            master_offsets_df = pd.DataFrame(
-                columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
-                         'tile_name'])
+    def run(self, *,
+            clean_tmp_on_exit: bool = True):
+        try:
+            start_time = time.time()
+            final_products: io.StorageLocation = self.output_dir.sub_location('final_products')
 
-        csv_files = [os.path.join(self.csb_directory, f) for f in os.listdir(self.csb_directory) if f.endswith('.csv')]
-        for csb_file in csv_files:
-            self.title = os.path.splitext(os.path.basename(csb_file))[0]
-            # We check for a final product to determine if we should skip
-            final_product_check = os.path.join(self.output_dir, "final_products", "csb_final_gridded.tif")
-            if os.path.exists(final_product_check):
-                print(f"Skipping already processed file based on existing final products: {self.title}")
-                continue
+            for csb_file in self.csb_directory.list_files(suffix='.csv'):
+                title = csb_file.get_stem()
+                # We check for a final product to determine if we should skip
+                if final_products.contains('csb_final_gridded.tif'):
+                    print(f"Skipping already processed file based on existing final products: {title}")
+                    continue
 
-            print(f"Processing {csb_file} with title: {self.title}")
-            try:
-                modeling_dir_path = os.path.join(self.output_dir, "Modeling")
+                print(f"Processing {csb_file.get_uri()} with title: {title}")
                 try:
-                    shutil.rmtree(modeling_dir_path)
-                except FileNotFoundError:
-                    pass  # It's ok if it doesn't exist
+                    self.output_dir.delete_all('Modeling')
+                    if self.use_bluetopo:
+                        bag_file: io.File = self.create_convex_hull_and_download_tiles(title, csb_file)
+                    elif self.bag_file_path:
+                        bag_file: io.File = self.bag_file_path
+                    else:
+                        raise Exception(f"Neither bag_file_path nor use_bluetopo where set when one must be.")
+
+                    self.rasterize_csb(title, csb_file, bag_file)
                 except Exception as e:
-                    print(f"Error deleting old Modeling folder: {e}")
+                    tb.print_exception(e)
+                    raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
 
-                if self.use_bluetopo:
-                    bag_file = self.create_convex_hull_and_download_tiles(csb_file,
-                                                                          self.output_dir,
-                                                                          self.title,
-                                                                          self.bag_file_path,
-                                                                          use_bluetopo=True)
+            if self.run_analysis:
+                print("\n***** Starting Post-Processing Analysis *****")
+                hist_export_dir: io.StorageLocation = self.output_dir.sub_location('histograms')
+                exports_folder: io.StorageLocation = self.output_dir.sub_location('transit_exports')
+
+                if not self.duckdb_path.exists():
+                    print(f"Error: DuckDB file not found at {str(self.duckdb_path)}. Cannot run analysis.")
                 else:
-                    bag_file = self.bag_file_path
+                    self.run_histograms_calibration_points(self.duckdb_path, hist_export_dir)
+                    self.run_apply_best_offsets(self.duckdb_path)
+                    self.run_export_transits(self.duckdb_path, exports_folder)  # This now checks internally if it should run
 
-                # ---Pass the master_offsets_df to rasterize_CSB ---
-                self.rasterize_csb(csb_file, bag_file, master_offsets_df)
+            if self.run_final_grid:
+                self.run_final_gridding_and_export()
 
-            except Exception as e:
-                tb.print_exception(e)
-                raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
-            finally:
-                self.cleanup_interim_files()
-
-        if self.run_analysis:
-            print("\n***** Starting Post-Processing Analysis *****")
-            db_path = os.path.join(self.output_dir, "csb.duckdb")
-            hist_export_dir = os.path.join(self.output_dir, "histograms")
-            exports_folder = os.path.join(self.output_dir, "transit_exports")
-
-            if not os.path.exists(db_path):
-                print(f"Error: DuckDB file not found at {db_path}. Cannot run analysis.")
+            end_time = time.time()
+            duration = end_time - start_time
+            minutes, seconds = divmod(duration, 60)
+            print(f"***** ALL STAGES DONE! Total processing time: {int(minutes)} minutes and {seconds:.1f} seconds")
+            print("processing complete.")
+            if self.clean_up_callback:
+                print("calling clean-up callback")
+                self.clean_up_callback()
+        finally:
+            if clean_tmp_on_exit:
+                shutil.rmtree(self.tmp_dir)
             else:
-                self.run_histograms_calibration_points(db_path, hist_export_dir)
-                self.run_apply_best_offsets(db_path)
-                self.run_export_transits(db_path, exports_folder)  # This now checks internally if it should run
-
-        if self.run_final_grid:
-            self.run_final_gridding_and_export()
-
-        end_time = time.time()
-        duration = end_time - start_time
-        minutes, seconds = divmod(duration, 60)
-        print(f"***** ALL STAGES DONE! Total processing time: {int(minutes)} minutes and {seconds:.1f} seconds")
-        print("processing complete.")
-        if self.clean_up_callback:
-            print("calling clean-up callback")
-            self.clean_up_callback()
+                print(f"Preserving temporary directory {self.tmp_dir}...")

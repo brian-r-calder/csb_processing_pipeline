@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 import tempfile
 import shutil
+import random
 
 import requests
 
@@ -98,7 +99,7 @@ def garage_credentials(docker_ip, docker_services, docker_compose_file, garage_l
     }
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def s3_client(garage_credentials):
     """Yields a fully configured boto3 client connected to the local Garage instance."""
     client = boto3.client(
@@ -109,8 +110,9 @@ def s3_client(garage_credentials):
         region_name="garage"
     )
 
-    # Create a default bucket
-    bucket_name = "csb-dest"
+    # Create a temporary bucket
+    random_part: str = f"{random.randrange(1000000, 9999999)}"
+    bucket_name = f"csb-dest-{random_part}"
     client.create_bucket(Bucket=bucket_name)
 
     yield {'client': client, 'bucket': bucket_name}
