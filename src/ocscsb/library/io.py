@@ -493,10 +493,13 @@ class File:
         return Path(self.object_name).suffix
 
     def move(self, dest: 'StorageLocation') -> 'File':
+        dest_file: File = dest.new_file(self.object_name)
+        if self.get_uri() == dest_file.get_uri():
+            # dest is self, don't try to move self to self
+            return dest_file
         try:
-            dest_file: File = dest.new_file(self.object_name)
-            with self.open(mode='r') as fread:
-                with dest_file.open(mode='w') as fwrite:
+            with self.open(mode='rb') as fread:
+                with dest_file.open(mode='wb') as fwrite:
                     fwrite.write(fread.read())
             self.delete()
             return dest_file

@@ -12,6 +12,10 @@ from typing import Callable
 import traceback as tb
 import gc
 from io import BytesIO
+import contextlib
+
+from osgeo import gdal
+gdal.UseExceptions()
 
 import requests
 import geopandas as gpd
@@ -925,7 +929,7 @@ class Processor:
         avg_array[valid_mask] = sum_array[valid_mask] / count_array[valid_mask]
 
         with rasterio.open(
-                out_raster_path.open(mode='wb'), driver='GTiff',
+                out_raster_path.open(mode='wb'), mode='w', driver='GTiff',
                 height=height, width=width, count=1,
                 dtype=np.float32, crs=gdf.crs.to_string(),
                 transform=transform, nodata=nodata,
@@ -962,6 +966,45 @@ class Processor:
             fn.move(out_folder)
             print(f"Moved {fn.get_uri()} → {out_folder.get_uri()}")
 
+    @staticmethod
+    def create_vrts_and_ovr(working_path: Path, vrt_name: str, gdal_paths: list[str], *,
+                            ctx_path: Path | None = None) -> tuple[Path, Path]:
+        """
+        Create VRT and overviews
+
+        Parameters
+        ----------
+        working_path
+            Path representing the directory in which to create VRT
+        vrt_name
+            Name of VRT file to create
+        gdal_paths
+            List of strings representing GDAL VSI paths (or relative file paths, i.e., file names)
+        ctx_path
+            Path to change the current directory to before creating VRT or overviews. If none, the current directory
+            will be used.
+
+        Returns
+        -------
+        Tuple[Path of VRT, Path of VRT overviews]
+        """
+        if ctx_path:
+            cm = contextlib.chdir(ctx_path)
+        else:
+            cm = contextlib.nullcontext()
+        with cm:
+            vrt_path = working_path / vrt_name
+            gdal.BuildVRT(vrt_path, gdal_paths, strict=True)
+            print("Building overviews for VRT...")
+            ds = gdal.Open(vrt_path)
+            if ds:
+                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+                ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+                ds = None
+            ovr_name = f"{vrt_name}.ovr"
+            ovr_path = working_path / ovr_name
+            return vrt_path, ovr_path
+
     def create_vrts_for_epsg_folders(self, base_dir: io.StorageLocation):
         """
         Scans for 'EPSG_' subfolders and builds a VRT for the TIFFs in each.
@@ -971,36 +1014,34 @@ class Processor:
             files = directory.list_files(suffix='.tif*')
             print(f"Found {len(files)} files in {directory.get_uri()}. Building VRT...")
             vrt_name = f"mosaic_{directory.name}.vrt"
-
-            # First, create VRT in a temporary file
-            tmp_vrt = self.tmp_dir / vrt_name
             # Get GDAL-compatible path to each file
             gdal_paths = [f.get_gdal_vsi_path(relative=True) for f in files]
-            # TODO: May need to set current working directory to directory else relative paths may cause BuildVRT to fail
-            gdal.BuildVRT(tmp_vrt, gdal_paths)
+            # First, create VRT in a temporary file
+            if directory.provider_type == io.StorageProviderType.LOCAL_FILE:
+                # Create temporary VRT in directory so that BuildVRT will use relative paths
+                vrt_path = Path(directory.location)
+                ctx_path = vrt_path
+            else:
+                vrt_path = self.tmp_dir
+                ctx_path = None
+            tmp_vrt, tmp_ovr = Processor.create_vrts_and_ovr(vrt_path, vrt_name, gdal_paths, ctx_path=ctx_path)
             # Now, copy temporary VRT to directory
             vrt_file = directory.new_file(vrt_name)
-            with tmp_vrt.open(mode='r') as r:
-                with vrt_file.open(mode='w') as w:
-                    w.write(r.read())
+            if str(tmp_vrt) != vrt_file.get_uri():
+                # Only copy tmp_vrt to vrt_file if they are not already the same file
+                with tmp_vrt.open(mode='r') as r:
+                    with vrt_file.open(mode='w') as w:
+                        w.write(r.read())
             print(f"VRT created: {vrt_file.get_uri()}")
-
-            # Build overviews (open the VRT in tmp since GDAL Python API can't take a file handle)
-            print("Building overviews for VRT...")
-            ds = gdal.Open(tmp_vrt)
-            if ds:
-                gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
-                ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
-                ds = None
             # Copy overviews to directory
-            tmp_ovr: Path = Path(f"{str(tmp_vrt)}.ovr")
             if not tmp_ovr.exists():
                 raise ProcessingException(f"Expected .ovr to exist for VRT {str(tmp_vrt)}, but it did not.")
-            ovr_name = f"{vrt_name}.ovr"
-            ovr_file = directory.new_file(ovr_name)
-            with tmp_ovr.open(mode='rb') as r:
-                with ovr_file.open(mode='wb') as w:
-                    w.write(r.read())
+            ovr_file = directory.new_file(tmp_ovr.name)
+            if str(tmp_ovr) != ovr_file.get_uri():
+                # Only copy tmp_ovr to ovr_file if they are not already the same file
+                with tmp_ovr.open(mode='rb') as r:
+                    with ovr_file.open(mode='wb') as w:
+                        w.write(r.read())
             print(f"Overviews built for {vrt_file.get_uri()}")
 
     def run_final_gridding_and_export(self):
@@ -1362,7 +1403,7 @@ class Processor:
                     'compress': 'lzw',
                     'interleave': 'band'
                 }
-                with rasterio.open(filename.open(mode='wb'), **out_meta) as dest:
+                with rasterio.open(filename.open(mode='wb'), mode='w', **out_meta) as dest:
                     for idx, col in enumerate(['depth', 'uncertainty'], start=1):
                         array = np.full((y_res, x_res), out_meta['nodata'], dtype='float32')
                         for point, value in zip(gdf.geometry, gdf[col]):
