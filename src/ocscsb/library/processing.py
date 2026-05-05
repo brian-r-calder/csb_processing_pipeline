@@ -1,10 +1,7 @@
 import os
 import tempfile
 from datetime import datetime, timedelta
-import logging
-import sys
 import shutil
-import glob
 import time
 from importlib import resources
 from pathlib import Path
@@ -34,7 +31,7 @@ from shapely.validation import make_valid
 import duckdb
 
 from shapely.ops import unary_union
-from skimage.morphology.binary import binary_dilation, binary_erosion
+from skimage.morphology import dilation, erosion
 from scipy.interpolate import interp1d
 import seaborn as sns
 from sklearn.experimental import enable_iterative_imputer
@@ -391,9 +388,9 @@ class Processor:
 
             # Apply dilation and erosion
             for _ in range(dilation_iterations):
-                binary_mask = binary_dilation(binary_mask)
+                binary_mask = dilation(binary_mask)
             for _ in range(erosion_iterations):
-                binary_mask = binary_erosion(binary_mask)
+                binary_mask = erosion(binary_mask)
 
             # Ensure binary_mask is of type uint8
             binary_mask = binary_mask.astype(np.uint8)
@@ -404,10 +401,6 @@ class Processor:
                 (raster.height / data.shape[-2])
             )
 
-            #polygons = [shape(geom) for geom, val in shapes(binary_mask, mask=binary_mask, transform=transform) if val == 1]
-
-            # Perform unary union
-            #unified_geometry = unary_union(polygons)
             # Generate polygons from the binary mask and make them valid
             polygons = [make_valid(shape(geom)) for geom, val in shapes(binary_mask, mask=binary_mask, transform=transform) if val == 1]
 
@@ -892,10 +885,6 @@ class Processor:
         if gdf.crs is None:
             raise ValueError("GeoDataFrame has no CRS. Please set or reproject first.")
 
-        # # --- Safety Check: Ensure the output directory exists before writing ---
-        # output_dir = os.path.dirname(out_raster_path)
-        # os.makedirs(output_dir, exist_ok=True)
-
         x_min, y_min, x_max, y_max = gdf.total_bounds
         width = int(np.ceil((x_max - x_min) / resolution))
         height = int(np.ceil((y_max - y_min) / resolution))
@@ -957,12 +946,7 @@ class Processor:
                 print(f"[WARN] {fn.get_uri()} has no recognized EPSG code, skipping.")
                 continue
 
-            # out_folder = os.path.join(input_dir, f"EPSG_{epsg}")
-            # os.makedirs(out_folder, exist_ok=True)
             out_folder: io.StorageLocation = input_dir.sub_location(f"EPSG_{epsg}")
-
-            # dest_path = os.path.join(out_folder, fn)
-            # shutil.move(src_path, dest_path)
             fn.move(out_folder)
             print(f"Moved {fn.get_uri()} → {out_folder.get_uri()}")
 
@@ -1049,8 +1033,6 @@ class Processor:
         Main function for the final gridding and export stage.
         """
         print("\n***** Starting Final Gridding & Export Stage *****")
-        # output_folder = os.path.join(self.output_dir, "final_products")
-        # os.makedirs(output_folder, exist_ok=True)
         with duckdb.connect(database=self.duckdb_path, read_only=False) as con:
             if self.tessellation_shp is not None and self.tessellation_shp.exists():
                 print(f"Using tessellation scheme: {self.tessellation_shp.get_uri()}")
@@ -1092,7 +1074,6 @@ class Processor:
                         continue
 
                     if self.export_final_gpkg:
-                        # gpkg_path = os.path.join(output_folder, f"{polygon_id}_points.gpkg")
                         gpkg_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_points.gpkg")
                         print(f"  Saving {len(points_gdf_4326)} points to GeoPackage...")
                         # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
@@ -1113,7 +1094,6 @@ class Processor:
                         print(f"  Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                         if not points_for_raster.empty:
-                            # tif_path = os.path.join(output_folder, f"{polygon_id}_gridded.tif")
                             tif_path: io.File = self.final_products_loc.new_file(f"{polygon_id}_gridded.tif")
                             self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     except ValueError as e:
@@ -1151,7 +1131,6 @@ class Processor:
                 )
 
                 if self.export_final_gpkg:
-                    # gpkg_path = os.path.join(output_folder, "csb_final_points.gpkg")
                     gpkg_path: io.File = self.final_products_loc.new_file('csb_final_points.gpkg')
                     print(f"Saving {len(points_gdf_4326)} points to GeoPackage...")
                     # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
@@ -1173,7 +1152,6 @@ class Processor:
                     print(f"Found {len(points_for_raster)} non-outlier points to create raster from.")
 
                     if not points_for_raster.empty:
-                        # tif_path = os.path.join(output_folder, "csb_final_gridded.tif")
                         tif_path: io.File = self.final_products_loc.new_file('csb_final_gridded.tif')
                         self.points_to_raster_average(points_for_raster, tif_path, value_col='depth')
                     else:
@@ -1187,44 +1165,6 @@ class Processor:
             self.create_vrts_for_epsg_folders(self.final_products_loc)
 
         print("***** Final Gridding & Export Stage Complete *****")
-
-    # def cleanup_interim_files(self):
-    #     """
-    #     Safely removes all temporary and intermediate files and folders created during processing.
-    #     """
-    #     print(f"\n--- Cleaning up interim files for {self.title} ---")
-    #
-    #     # List of folder paths to remove
-    #     folders_to_remove = [
-    #         os.path.join(self.output_dir, "Modeling")
-    #     ]
-    #
-    #     for folder in folders_to_remove:
-    #         try:
-    #             if os.path.exists(folder):
-    #                 shutil.rmtree(folder)
-    #                 print(f"Removed folder: {folder}")
-    #         except Exception as e:
-    #             print(f"Error removing folder {folder}: {e}")
-    #
-    #     # List of file patterns to remove
-    #     file_patterns_to_remove = [
-    #         os.path.join(self.output_dir, f"{self.title}_5m_MLLW.tif"),
-    #         os.path.join(self.output_dir, f"{self.title}_wgs84.tif"),
-    #         os.path.join(self.output_dir, f"{self.title}_intermediate.tif"),
-    #         os.path.join(self.output_dir, "convex_hull_polygon.*"),
-    #         os.path.join(self.output_dir, f"{self.title}_bathy_polygon.*")
-    #     ]
-    #
-    #     for pattern in file_patterns_to_remove:
-    #         files = glob.glob(pattern)
-    #         for f in files:
-    #             try:
-    #                 if os.path.exists(f):
-    #                     os.remove(f)
-    #                     print(f"Removed file: {f}")
-    #             except Exception as e:
-    #                 print(f"Error removing file {f}: {e}")
 
     # --- END: FINAL GRIDDING AND EXPORT FUNCTIONS ---
 
@@ -1574,8 +1514,6 @@ class Processor:
                             print(f"Could not determine NAD83 UTM zone for lat={avg_lat}, lon={avg_lon}: {ve}")
                             continue
 
-                        # zone_folder = os.path.join(exports_folder, f"zone_{epsg_zone}")
-                        # os.makedirs(zone_folder, exist_ok=True)
                         zone_folder: io.StorageLocation = exports_folder.sub_location(f"zone_{epsg_zone}")
                         non_outlier_gdf.to_crs(epsg=epsg_zone, inplace=True)
 
@@ -1607,20 +1545,8 @@ class Processor:
             clean_tmp_on_exit: bool = True):
         try:
             start_time = time.time()
-            # # --- Load master offsets once at the start ---
-            # master_offset_file: io.File = self.output_dir.new_file('master_offsets.csv')
-            # if master_offset_file.exists():
-            #     print(f"Found existing master offsets file at: {master_offset_file.get_uri()}")
-            #     master_offsets_df = pd.read_csv(master_offset_file.open())
-            # else:
-            #     print("No master_offsets.csv found. Will create a new one.")
-            #     master_offsets_df = pd.DataFrame(
-            #         columns=['unique_id', 'platform_name', 'offset_value', 'std_dev', 'accuracy_score', 'date_range',
-            #                  'tile_name'])
-
             final_products: io.StorageLocation = self.output_dir.sub_location('final_products')
 
-            # csv_files = [os.path.join(self.csb_directory, f) for f in os.listdir(self.csb_directory) if f.endswith('.csv')]
             for csb_file in self.csb_directory.list_files(suffix='.csv'):
                 title = csb_file.get_stem()
                 # We check for a final product to determine if we should skip
@@ -1632,14 +1558,6 @@ class Processor:
                 print(f"Processing {csb_file.get_uri()} with title: {title}")
                 try:
                     self.output_dir.delete_all('Modeling')
-                    # modeling_dir_path = os.path.join(self.output_dir, "Modeling")
-                    # try:
-                    #     shutil.rmtree(modeling_dir_path)
-                    # except FileNotFoundError:
-                    #     pass  # It's ok if it doesn't exist
-                    # except Exception as e:
-                    #     print(f"Error deleting old Modeling folder: {e}")
-
                     if self.use_bluetopo:
                         bag_file: io.File = self.create_convex_hull_and_download_tiles(title, csb_file)
                     elif self.bag_file_path:
@@ -1651,8 +1569,6 @@ class Processor:
                 except Exception as e:
                     tb.print_exception(e)
                     raise ProcessingException(f"An error occurred during initial processing of {csb_file}: {e}")
-                # finally:
-                #     self.cleanup_interim_files()
 
             if self.run_analysis:
                 print("\n***** Starting Post-Processing Analysis *****")
@@ -1680,3 +1596,5 @@ class Processor:
         finally:
             if clean_tmp_on_exit:
                 shutil.rmtree(self.tmp_dir)
+            else:
+                print(f"Preserving temporary directory {self.tmp_dir}...")
