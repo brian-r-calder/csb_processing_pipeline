@@ -577,12 +577,10 @@ class Processor:
 
     def extract_bag(self, title: str, bag_file: io.File) -> tuple[Path, Path]:
         print("starting BAGextract() function")
-        # BAG_filepath = os.path.abspath(bag_file)
         print("DEBUG - bag_file: ", bag_file.get_uri())
         print('*****Starting to import reference bathy*****')
 
         output_raster_wgs84 = self.tmp_dir / f"{title}_wgs84.tif"
-        # temp_vrt_path: Path = self.tmp_dir / 'temp_for_warp.vrt'
 
         print("Warping input raster to standard WGS84 (EPSG:4269)...")
 
@@ -830,7 +828,6 @@ class Processor:
 
         # Merge the CSB data with the master offsets based on unique vessel ID
         # This will now include any newly derived offsets from the step above
-        # master_offsets_updated = self.read_master_offsets()  # Read the potentially updated file
         csb_corr1 = csb_corr.merge(self.master_offsets, on='unique_id', how='left')
 
         # Apply the offset correction
@@ -859,7 +856,6 @@ class Processor:
 
         # Optionally export as geopackage if the checkbox is selected.
         if self.export_gp:
-            # gpkg_path = os.path.join(self.output_dir, 'csb_processed_' + self.title + '.gpkg')
             gpkg_path: io.File = self.output_dir.new_file(f"csb_processed_{title}.gpkg")
             print('*****Exporting processed CSB data to geopackage*****')
             # First write to memory, then write to file (since GeoPandas can't write to an open file handle)
@@ -1550,7 +1546,6 @@ class Processor:
             for csb_file in self.csb_directory.list_files(suffix='.csv'):
                 title = csb_file.get_stem()
                 # We check for a final product to determine if we should skip
-                # final_product_check = os.path.join(self.output_dir, "final_products", "csb_final_gridded.tif")
                 if final_products.contains('csb_final_gridded.tif'):
                     print(f"Skipping already processed file based on existing final products: {title}")
                     continue
