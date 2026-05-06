@@ -11,6 +11,8 @@ import pytest
 
 import boto3
 
+from ocscsb.library import io
+
 
 def is_responsive(url):
     """Check if the Garage S3 endpoint is responsive.
@@ -123,3 +125,49 @@ def temp_path():
     tmp_dir = Path(tempfile.mkdtemp())
     yield tmp_dir
     shutil.rmtree(tmp_dir)
+
+
+@pytest.fixture(scope="session")
+def data_path() -> Path:
+    return Path(Path(__file__).parent, 'data').absolute()
+
+
+@pytest.fixture(scope="session")
+def csb_path(data_path) -> Path:
+    return data_path / 'csb_raw_NH'
+
+
+@pytest.fixture(scope="session")
+def fes_data_path(data_path) -> Path:
+    return data_path / 'fes2022b' / 'ocean_tide_extrapolated'
+
+
+@pytest.fixture(scope="session")
+def tessellation_path(data_path) -> Path:
+    return data_path / 'tessellation_testing' / 'tessellation_testing.gpkg'
+
+
+@pytest.fixture(scope="function")
+def csb_location_s3(s3_client, data_path, csb_path):
+    location: str = f"{s3_client['bucket']}/{csb_path.name}"
+    csb_location: io.StorageLocation = io.StorageLocation(location, 'S3',
+                                                          client=s3_client['client'])
+    for csv in csb_path.glob('*.csv'):
+        dest: io.File = csb_location.new_file(csv.name)
+        with csv.open(mode='rb') as fread:
+            with dest.open(mode='wb') as fwrite:
+                fwrite.write(fread.read())
+    return {
+        'location_str': location,
+        'location': csb_location
+    }
+
+
+@pytest.fixture(scope="function")
+def output_location_s3(s3_client):
+    location: str = f"{s3_client['bucket']}/output"
+    output_location: io.StorageLocation = io.StorageLocation(location, 'S3', client=s3_client['client'])
+    return {
+        'location_str': location,
+        'location': output_location
+    }
