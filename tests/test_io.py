@@ -95,7 +95,7 @@ def test_s3_write(s3_client):
         assert HELLO_WORLD == f_in.readline()
 
 def test_s3_write_subdir(s3_client):
-    # Make sure parent directory preparation works
+    # Make sure sub-path handling is correct
     location: io.StorageLocation = io.StorageLocation(s3_client['bucket'], 'S3',
                                                       client=s3_client['client'])
     fpath_rel = 'newsubdir/file.txt'
@@ -105,6 +105,27 @@ def test_s3_write_subdir(s3_client):
         f.writelines(HELLO_WORLD)
     with file.open() as f:
         assert HELLO_WORLD == f.readline()
+
+    # Now test creation of storage location with sub-path baked into the location
+    location: io.StorageLocation = io.StorageLocation(f"{s3_client['bucket']}/anothersub", 'S3',
+                                                      client=s3_client['client'])
+    fpath_rel = 'file.txt'
+    file: io.File = location.new_file(fpath_rel)
+    assert not file.exists()
+    with file.open(mode='w') as f:
+        f.writelines(HELLO_WORLD)
+    with file.open() as f:
+        assert HELLO_WORLD == f.readline()
+
+    # Finally, test invalid locations (at this point this just means begins or ends with '/', note
+    # other invalid characters in locations will be caught be the underlying library)
+    with pytest.raises(ValueError):
+        _: io.StorageLocation = io.StorageLocation(f"/{s3_client['bucket']}/anothersub", 'S3',
+                                                   client=s3_client['client'])
+    with pytest.raises(ValueError):
+        _: io.StorageLocation = io.StorageLocation(f"{s3_client['bucket']}/anothersub/", 'S3',
+                                                   client=s3_client['client'])
+
 
 def test_local_list_objects(temp_path):
     # Create some files

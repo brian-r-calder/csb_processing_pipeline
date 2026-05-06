@@ -154,7 +154,7 @@ Once you have an Aviso account, login using your account to the following SFTP s
 sftp://ftp-access.aviso.altimetry.fr:2221/auxiliary/tide_model
 
 Then download the contents of the `fes2022b/ocean_tide_extrapolated` directory. Once downloaded, unzip each
-NetCDF file. Save the .nc files to the directory `data/fes2022b/ocean_tide_extrapolated`.
+NetCDF file. Save the .nc files to the directory [tests/data/fes2022b/ocean_tide_extrapolated](tests/data/fes2022b/ocean_tide_extrapolated).
 
 
 

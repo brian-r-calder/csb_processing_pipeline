@@ -528,8 +528,18 @@ class StorageLocation:
                 self.location = location
                 self.storage_provider: StorageProvider = StorageProviderFile(location)
             case StorageProviderType.S3:
-                self.location = cast(str, location)
-                self._sub_path = kwargs.get('sub_path', None)
+                location = cast(str, location)
+                if location[0] == '/':
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not begin with '/'")
+                if location[-1] == '/':
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not end with '/'")
+                loc_end_idx: int = location.find('/')
+                if loc_end_idx > 0:
+                    self.location = location[:loc_end_idx]
+                    self._sub_path = location[loc_end_idx+1:]
+                else:
+                    self.location = cast(str, location)
+                    self._sub_path = kwargs.get('sub_path', None)
                 self.storage_provider: StorageProvider = StorageProviderS3(self.location,
                                                                            client=self._client)
             case _:
