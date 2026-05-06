@@ -28,4 +28,17 @@ def test_processor_s3(s3_client, csb_location_s3, output_location_s3, fes_data_p
         organize_vrt=True
     )
     proc.run()
-    # TODO: Assert final products exist where expected...
+    # Assert final products exist where expected...
+    final_products: io.StorageLocation = output_location_s3['location'].sub_location('final_products')
+    assert final_products.contains('CX-12_points.gpkg')
+    epsg_32619: io.StorageLocation = final_products.sub_location('EPSG_32619')
+    epsg_32619.contains('CX-12_gridded.tif')
+    epsg_32619.contains('mosaic_EPSG_32619.vrt')
+    epsg_32619.contains('mosaic_EPSG_32619.vrt.ovr')
+    histograms: io.StorageLocation = output_location_s3['location'].sub_location('histograms')
+    histo_files = histograms.list_files()
+    assert len(histo_files) == 24
+    transit_exports: io.StorageLocation = output_location_s3['location'].sub_location('transit_exports')
+    transit_files = transit_exports.list_files()
+    assert len(transit_files) == 32
+    assert output_location_s3['location'].contains('VESSEL_OFFSETS_csb_corr_csb_raw_1.csv')
