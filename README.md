@@ -145,6 +145,10 @@ conda env create -f environment-dev.yml
 
 ## Data
 
+### Download FES2022 tidal constituent data
+First, register for an Aviso account [here](https://www.aviso.altimetry.fr/en/data/products/auxiliary-products/global-tide-fes/release-fes22.html)
+
+
 ### Convert NOAA tide polygons to SQLite format
 ```shell
 ogr2ogr -of SQLite -lco 'LAUNDER=NO' tide_zone_polygons.sqlite  tide_zone_polygons.shp
