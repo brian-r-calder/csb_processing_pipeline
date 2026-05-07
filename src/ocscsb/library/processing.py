@@ -280,7 +280,11 @@ class Processor:
 
     def update_master_offsets(self,
                               title: str,
-                              unique_id, platform_name, new_offset, std_dev, date_range):
+                              unique_id: str,
+                              platform_name: str,
+                              new_offset: float,
+                              std_dev: float,
+                              date_range: tuple[str, str]):
         accuracy_score = 1 / std_dev if std_dev != 0 else 0
 
         #print('checking for existing offset by unique_id and platform_name')
@@ -758,7 +762,7 @@ class Processor:
                     new_offset = row['mean']
                     std_dev = row['std']
                     date_range = date_ranges.get(unique_id, ("19700101", "19700101"))
-                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, title)
+                    self.update_master_offsets(title, unique_id, platform_name, new_offset, std_dev, date_range)
             except Exception as e:
                 print(f"Unexpected error encountered creating aggregation dataframe: {e}")
 
