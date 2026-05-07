@@ -145,6 +145,19 @@ conda env create -f environment-dev.yml
 
 ## Data
 
+### Download FES2022 tidal constituent data
+First, register for an Aviso account 
+[here](https://www.aviso.altimetry.fr/en/data/products/auxiliary-products/global-tide-fes/release-fes22.html).
+
+Once you have an Aviso account, login using your account to the following SFTP site:
+
+sftp://ftp-access.aviso.altimetry.fr:2221/auxiliary/tide_model
+
+Then download the contents of the `fes2022b/ocean_tide_extrapolated` directory. Once downloaded, unzip each
+NetCDF file. Save the .nc files to the directory [tests/data/fes2022b/ocean_tide_extrapolated](tests/data/fes2022b/ocean_tide_extrapolated).
+
+
+
 ### Convert NOAA tide polygons to SQLite format
 ```shell
 ogr2ogr -of SQLite -lco 'LAUNDER=NO' tide_zone_polygons.sqlite  tide_zone_polygons.shp

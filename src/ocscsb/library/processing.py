@@ -5,7 +5,7 @@ import shutil
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Any
 import traceback as tb
 import gc
 from io import BytesIO
@@ -107,11 +107,12 @@ class ProcessingException(Exception):
 class Processor:
     def __init__(self,
                  csb_directory: str,
-                 bag_file_path: str,
                  output_dir: str,
                  *,
                  provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT,
+                 provider_args: dict[str, Any] | None = None,
                  clean_up_callback: Callable | None = None,
+                 bag_file_path: str | None = None,
                  fp_zones: str | None = None,
                  use_bluetopo: bool = True,
                  use_fes_model: bool = True,
@@ -127,14 +128,21 @@ class Processor:
                  grid_resolution: float = 10.0,
                  organize_vrt: bool = False):
         self.tmp_dir: Path = Path(tempfile.mkdtemp())
-        self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider)
+        if provider_args:
+            self.provider_args = provider_args
+        else:
+            self.provider_args = {}
+        self.csb_directory: io.StorageLocation = io.StorageLocation(csb_directory, provider=provider,
+                                                                    **self.provider_args)
 
         self.use_bluetopo = use_bluetopo
         self.bag_file_path: io.File | None = None
         if bag_file_path and bag_file_path != '':
-            self.bag_file_path: io.File = io.File.init(bag_file_path, provider=provider)
+            self.bag_file_path: io.File = io.File.init(bag_file_path, provider=provider,
+                                                       **self.provider_args)
 
-        self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider)
+        self.output_dir: io.StorageLocation = io.StorageLocation(output_dir, provider=provider,
+                                                                 **self.provider_args)
         self.final_products_loc: io.StorageLocation = self.output_dir.sub_location('final_products')
 
         if fp_zones is None or fp_zones == '':
@@ -272,7 +280,11 @@ class Processor:
 
     def update_master_offsets(self,
                               title: str,
-                              unique_id, platform_name, new_offset, std_dev, date_range):
+                              unique_id: str,
+                              platform_name: str,
+                              new_offset: float,
+                              std_dev: float,
+                              date_range: tuple[str, str]):
         accuracy_score = 1 / std_dev if std_dev != 0 else 0
 
         #print('checking for existing offset by unique_id and platform_name')
@@ -750,7 +762,7 @@ class Processor:
                     new_offset = row['mean']
                     std_dev = row['std']
                     date_range = date_ranges.get(unique_id, ("19700101", "19700101"))
-                    self.update_master_offsets(unique_id, platform_name, new_offset, std_dev, date_range, title)
+                    self.update_master_offsets(title, unique_id, platform_name, new_offset, std_dev, date_range)
             except Exception as e:
                 print(f"Unexpected error encountered creating aggregation dataframe: {e}")
 

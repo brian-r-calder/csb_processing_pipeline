@@ -1,11 +1,13 @@
+from _thread import RLock
 from abc import ABC
 from pathlib import Path
 import datetime
 import time
 from enum import Enum, Flag, auto
-from typing import cast, Sequence
+from typing import cast, Sequence, Any, Generator
 import shutil
 import io
+import threading
 
 from smart_open import open as sopen
 
@@ -17,6 +19,9 @@ from ocscsb.library.cloud import aws
 # 72-hours TTL
 DEFAULT_TTL_SEC = 259_200
 ALWAYS_EXISTS_TTL = -1
+
+_OPEN_LOCKS_LOCK = threading.RLock()
+_OPEN_LOCKS: dict[str, threading.RLock] = {}
 
 class ObjectType(Flag):
     FILE = auto()
@@ -114,7 +119,7 @@ class StorageProvider(ABC):
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None,
              **kwargs):
         """
-        Open `object_name` for reading for writing.
+        Open `object_name` for reading or writing in a thread-safe manner.
 
         Parameters
         ----------
@@ -134,10 +139,33 @@ class StorageProvider(ABC):
         ------
         StorageProvider.ObjectStateError if the file cannot be opened.
         """
-        self._prepare_open(object_name)
-        return sopen(self.generate_resource_uri(object_name=object_name),
-                     mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
-                     **kwargs)
+        uri = self.generate_resource_uri(object_name=object_name)
+        with _OPEN_LOCKS_LOCK:
+            lock = _OPEN_LOCKS.get(str(uri), threading.RLock())
+        with lock:
+            self._prepare_open(object_name)
+            if 'a' in mode:
+                # Some smart-open backends (e.g., S3) don't support append operations, so we need to fake it
+                existing_data = None
+                read_mode = 'rb' if 'b' in mode else 'r'
+                if self.object_exists(object_name):
+                    try:
+                        with sopen(uri, mode=read_mode, buffering=buffering, encoding=encoding, errors=errors,
+                                   newline=newline, **kwargs) as f_in:
+                            existing_data = f_in.read()
+                    except Exception as e:
+                        raise StorageProvider.IOError(f"Exception occurred while emulating append-mode operation: {str(e)}")
+
+                write_mode = mode.replace('a', 'w')
+                f_out = sopen(uri, mode=write_mode, buffering=buffering, encoding=encoding, errors=errors,
+                              newline=newline, **kwargs)
+                if existing_data:
+                    f_out.write(existing_data)
+                return f_out
+            else:
+                return sopen(uri,
+                             mode=mode, buffering=buffering, encoding=encoding, errors=errors, newline=newline,
+                             **kwargs)
 
     def list_objects(self,
                      prefix: str | None = None,
@@ -510,6 +538,12 @@ class File:
     def delete(self) -> bool:
         return self.storage_provider.delete_object(self.object_name)
 
+    def __str__(self):
+        return self.get_uri()
+
+    def __repr__(self):
+        return self.get_uri()
+
 
 class StorageLocation:
     def __init__(self, location: str | Path, provider: StorageProviderType | str,
@@ -528,8 +562,18 @@ class StorageLocation:
                 self.location = location
                 self.storage_provider: StorageProvider = StorageProviderFile(location)
             case StorageProviderType.S3:
-                self.location = cast(str, location)
-                self._sub_path = kwargs.get('sub_path', None)
+                location = cast(str, location)
+                if location[0] == '/':
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not begin with '/'")
+                if location[-1] == '/':
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not end with '/'")
+                loc_end_idx: int = location.find('/')
+                if loc_end_idx > 0:
+                    self.location = location[:loc_end_idx]
+                    self._sub_path = location[loc_end_idx+1:]
+                else:
+                    self.location = cast(str, location)
+                    self._sub_path = kwargs.get('sub_path', None)
                 self.storage_provider: StorageProvider = StorageProviderS3(self.location,
                                                                            client=self._client)
             case _:
@@ -606,3 +650,9 @@ class StorageLocation:
         if sub_path is None and self._sub_path:
             sub_path = self._sub_path
         return str(self.storage_provider.generate_resource_uri(object_name=object_name, sub_path=sub_path))
+
+    def __str__(self):
+        return self.get_uri()
+
+    def __repr__(self):
+        return self.get_uri()

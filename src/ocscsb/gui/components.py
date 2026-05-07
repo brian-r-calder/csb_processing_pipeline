@@ -226,8 +226,8 @@ class MainWindow:
             return
         processor: Processor = Processor(
             csb_directory,
-            bag_file_path,
             output_dir,
+            bag_file_path=bag_file_path,
             fp_zones=fp_zones,
             use_bluetopo=use_bluetopo,
             use_fes_model=use_fes_model,
