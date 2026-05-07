@@ -119,7 +119,7 @@ class StorageProvider(ABC):
     def open(self, object_name: str, mode='r', buffering=-1, encoding=None, errors=None, newline=None,
              **kwargs):
         """
-        Open `object_name` for reading for writing.
+        Open `object_name` for reading or writing in a thread-safe manner.
 
         Parameters
         ----------
