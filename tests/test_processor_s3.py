@@ -8,8 +8,8 @@ from .fixtures import (s3_client, garage_credentials, garage_layout, data_path, 
 from ocscsb.library.processing import Processor
 from ocscsb.library import io
 
-def test_csb_s3_path(csb_s3_location):
-    assert csb_s3_location.contains('csb_raw_1-trunc.csv')
+def test_csb_s3_path(csb_location_s3):
+    assert csb_location_s3['location'].contains('csb_raw_1-trunc.csv')
 
 def test_processor_s3(s3_client, csb_location_s3, output_location_s3, fes_data_path, tessellation_path):
     proc: Processor = Processor(

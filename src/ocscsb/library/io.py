@@ -1,10 +1,9 @@
-from _thread import RLock
 from abc import ABC
 from pathlib import Path
 import datetime
 import time
 from enum import Enum, Flag, auto
-from typing import cast, Sequence, Any, Generator
+from typing import cast, Sequence
 import shutil
 import io
 import threading
@@ -191,8 +190,16 @@ class StorageProvider(ABC):
 
 class StorageProviderFile(StorageProvider):
     def __init__(self, location: str):
+        """
+        Create a new local-file StorageProvider.
+
+        Parameters
+        ----------
+        location
+            String representing location for this file provider. Note: Will be stored as a resolved `pathlib.Path`.
+        """
         super().__init__(location)
-        self.location_path: Path = Path(self.location).absolute()
+        self.location_path: Path = Path(self.location).resolve()
 
     def generate_resource_uri(self, *,
                               object_name: str | None = None,
@@ -488,7 +495,7 @@ class File:
     def from_path(cls, path: Path) -> 'File':
         if not path.is_file():
             raise ValueError(f"Path {path} is not a file.")
-        path_abs: Path = path.absolute()
+        path_abs: Path = path.resolve()
         location_str: str = str(path_abs.parent)
         storage_provider: StorageProvider = StorageProviderFile(location_str)
         return cls(location_str, path_abs.name, storage_provider)
