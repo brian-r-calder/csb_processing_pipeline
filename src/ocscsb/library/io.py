@@ -1,3 +1,4 @@
+import os
 from abc import ABC
 from pathlib import Path
 import datetime
@@ -22,9 +23,24 @@ ALWAYS_EXISTS_TTL = -1
 _OPEN_LOCKS_LOCK = threading.RLock()
 _OPEN_LOCKS: dict[str, threading.RLock] = {}
 
+
 class ObjectType(Flag):
     FILE = auto()
     DIRECTORY = auto()
+
+
+class StorageProviderType(Enum):
+    LOCAL_FILE = 1
+    S3 = 2
+
+
+STORAGE_PROVIDER_TYPES = [e.name.lower() for e in list(StorageProviderType)]
+STORAGE_PROVIDER_TYPE_DEFAULT = StorageProviderType.LOCAL_FILE.name.lower()
+STORAGE_PROVIDER_SEPS = {
+    StorageProviderType.LOCAL_FILE: os.sep,
+    StorageProviderType.S3: '/',
+}
+
 
 class StorageProvider(ABC):
     class ObjectStateError(Exception):
@@ -34,7 +50,8 @@ class StorageProvider(ABC):
         ...
 
     def __init__(self, location: str):
-        self.location = location
+        self.location: str = location
+        self.sep: str = '/'
 
     def generate_resource_uri(self, *,
                               object_name: str | None = None,
@@ -200,6 +217,7 @@ class StorageProviderFile(StorageProvider):
         """
         super().__init__(location)
         self.location_path: Path = Path(self.location).resolve()
+        self.sep = os.sep
 
     def generate_resource_uri(self, *,
                               object_name: str | None = None,
@@ -305,6 +323,7 @@ class StorageProviderFile(StorageProvider):
 class StorageProviderS3(StorageProvider):
     def __init__(self, location: str, client: boto3.client):
         super().__init__(location)
+        self.sep = STORAGE_PROVIDER_SEPS[StorageProviderType.S3]
         if client is None:
             self._client = aws.get_boto_client('s3')
         else:
@@ -315,9 +334,9 @@ class StorageProviderS3(StorageProvider):
                               sub_path: str | None = None) -> str | Path:
         object_parent = self.location
         if sub_path is not None:
-            object_parent = f"{object_parent}/{sub_path}"
+            object_parent = f"{object_parent}{self.sep}{sub_path}"
         if object_name is not None:
-            return f"s3://{object_parent}/{object_name}"
+            return f"s3://{object_parent}{self.sep}{object_name}"
         return f"s3://{object_parent}"
 
     def generate_gdal_vsi_path(self, object_name: str,
@@ -335,7 +354,7 @@ class StorageProviderS3(StorageProvider):
                       sub_path: str | None = None) -> bool:
         object_path = object_name
         if sub_path is not None:
-            object_path = f"{sub_path}/{object_name}"
+            object_path = f"{sub_path}{self.sep}{object_name}"
         try:
             response = self._client.head_object(
                 Bucket=self.location,
@@ -378,7 +397,7 @@ class StorageProviderS3(StorageProvider):
         bucket = self.location
         obj_prefix = ''
         if sub_path:
-            obj_prefix = f"{sub_path}/"
+            obj_prefix = f"{sub_path}{self.sep}"
 
         pattern = None
         if suffix:
@@ -396,7 +415,7 @@ class StorageProviderS3(StorageProvider):
             for obj in page.get('Contents', []):
                 key = obj['Key']
                 # Remove sub_path from the key to get just the object name
-                if sub_path and key.startswith(f"{sub_path}/"):
+                if sub_path and key.startswith(f"{sub_path}{self.sep}"):
                     name = key[len(sub_path) + 1:]
                 else:
                     name = key
@@ -412,12 +431,12 @@ class StorageProviderS3(StorageProvider):
 
     def list_directory_like(self,
                             pattern: str | None = None) -> list[str]:
-        if pattern and not pattern.endswith('/') and not '*' in pattern:
-            pattern = f"{pattern}*/"
+        if pattern and not pattern.endswith(self.sep) and not '*' in pattern:
+            pattern = f"{pattern}*{self.sep}"
         objects = self.list_objects(prefix=pattern)
         dirs = set()
         for obj in objects:
-            comp = obj.split('/')
+            comp = obj.split(self.sep)
             if len(comp) > 1:
                 dirs.add(comp[0])
 
@@ -426,7 +445,7 @@ class StorageProviderS3(StorageProvider):
     def delete_object(self, object_name: str, sub_path: str | None = None) -> bool:
         key = object_name
         if sub_path:
-            key = f"{sub_path}/{object_name}"
+            key = f"{sub_path}{self.sep}{object_name}"
         try:
             self._client.delete_object(Bucket=self.location, Key=key)
             return True
@@ -439,7 +458,7 @@ class StorageProviderS3(StorageProvider):
             return False
 
         bucket = self.location
-        prefix = f"{sub_path}/"
+        prefix = f"{sub_path}{self.sep}"
 
         paginator = self._client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
@@ -449,15 +468,6 @@ class StorageProviderS3(StorageProvider):
                 delete_keys = {'Objects': [{'Key': obj['Key']} for obj in page['Contents']]}
                 self._client.delete_objects(Bucket=bucket, Delete=delete_keys)
         return True
-
-
-class StorageProviderType(Enum):
-    LOCAL_FILE = 1
-    S3 = 2
-
-
-STORAGE_PROVIDER_TYPES = [e.name.lower() for e in list(StorageProviderType)]
-STORAGE_PROVIDER_TYPE_DEFAULT = StorageProviderType.LOCAL_FILE.name.lower()
 
 
 class File:
@@ -470,17 +480,20 @@ class File:
     def init(cls, location: str | Path, *,
              object_name: str | None = None, provider: StorageProviderType | str = StorageProviderType.LOCAL_FILE,
              **kwargs) -> 'File':
+        if isinstance(provider, str):
+            provider = StorageProviderType[provider.upper()]
+        provider = cast(StorageProviderType, provider)
+
         location_str: str = str(location)
+        sep = STORAGE_PROVIDER_SEPS[provider]
         if object_name is None:
-            path_comp = location_str.split('/')
+            path_comp = location_str.split(sep)
             if len(path_comp) < 2:
                 raise ValueError("location must include object name because object_name was None. "
                                  f"Location was: {location_str}")
             object_name = path_comp[-1]
-            location_str = '/'.join(path_comp[:-1])
+            location_str = sep.join(path_comp[:-1])
 
-        if isinstance(provider, str):
-            provider = StorageProviderType[provider.upper()]
         match provider:
             case StorageProviderType.LOCAL_FILE:
                 storage_provider: StorageProvider = StorageProviderFile(location_str)
@@ -551,6 +564,24 @@ class File:
     def __repr__(self):
         return self.get_uri()
 
+    def __hash__(self):
+        return hash(self.get_uri())
+
+    def __eq__(self, other):
+        if not isinstance(other, File):
+            return False
+        return self.get_uri() == other.get_uri()
+
+    def __lt__(self, other):
+        if not isinstance(other, File):
+            return False
+        return self.get_uri() < other.get_uri()
+
+    def __gt__(self, other):
+        if not isinstance(other, File):
+            return False
+        return self.get_uri() > other.get_uri()
+
 
 class StorageLocation:
     def __init__(self, location: str | Path, provider: StorageProviderType | str,
@@ -562,19 +593,21 @@ class StorageLocation:
         self._client = kwargs.get('client',None)
         match provider:
             case StorageProviderType.LOCAL_FILE:
+                self.sep = STORAGE_PROVIDER_SEPS[StorageProviderType.LOCAL_FILE]
                 if 'sub_path' in kwargs:
-                    location: str = f"{location}/{kwargs['sub_path']}"
+                    location: str = f"{location}{self.sep}{kwargs['sub_path']}"
                 else:
                     location: str = cast(str, location)
                 self.location = location
                 self.storage_provider: StorageProvider = StorageProviderFile(location)
             case StorageProviderType.S3:
+                self.sep = STORAGE_PROVIDER_SEPS[StorageProviderType.S3]
                 location = cast(str, location)
-                if location[0] == '/':
-                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not begin with '/'")
-                if location[-1] == '/':
-                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not end with '/'")
-                loc_end_idx: int = location.find('/')
+                if location[0] == self.sep:
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not begin with '{self.sep}'")
+                if location[-1] == self.sep:
+                    raise ValueError(f"Location {location} is invalid for S3 storage provider: must not end with '{self.sep}'")
+                loc_end_idx: int = location.find(self.sep)
                 if loc_end_idx > 0:
                     self.location = location[:loc_end_idx]
                     self._sub_path = location[loc_end_idx+1:]
@@ -597,7 +630,7 @@ class StorageLocation:
         """
         if self._sub_path:
             return self._sub_path
-        return self.location.split('/')[-1]
+        return self.location.split(self.sep)[-1]
 
     def new_file(self, object_name: str) -> File:
         if self._sub_path:
@@ -622,7 +655,7 @@ class StorageLocation:
         files = []
         for name in names:
             if sub_path:
-                obj_name = f"{sub_path}/{name}"
+                obj_name = f"{sub_path}{self.sep}{name}"
             else:
                 obj_name = name
             files.append(File(self.location, obj_name, self.storage_provider))
@@ -648,7 +681,7 @@ class StorageLocation:
 
     def sub_location(self, sub_location: str) -> 'StorageLocation':
         if self._sub_path is not None:
-            sub_location = f"{self._sub_path}/{sub_location}"
+            sub_location = f"{self._sub_path}{self.sep}{sub_location}"
         return StorageLocation(self.location, self.provider_type,
                                sub_path=sub_location,
                                client=self._client)
