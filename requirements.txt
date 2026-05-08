@@ -17,3 +17,4 @@ rich~=14.3.2
 boto3
 tqdm
 smart_open[s3]
+pyfes~=2026.4.0

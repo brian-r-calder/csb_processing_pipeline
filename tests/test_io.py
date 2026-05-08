@@ -149,9 +149,10 @@ def test_local_list_objects(temp_path):
     assert len(names) == 3
 
     # Verify stem
-    expected_stems = ['TEST2', 'test1', 'other']
-    expected_suffixes = ['.TIF', '.tiff', '.dat']
-    for i, f in enumerate(files):
+    expected_stems = ['TEST2', 'other', 'test1']
+    expected_suffixes = [ '.TIF', '.dat', '.tiff']
+    files_sorted = sorted(files)
+    for i, f in enumerate(files_sorted):
         assert f.get_stem() == expected_stems[i]
         assert f.get_suffix() == expected_suffixes[i]
 
@@ -167,21 +168,21 @@ def test_local_list_objects(temp_path):
     files = location.list_files(prefix='EPSG_*/', suffix='.tif*')
     assert len(files) == 1
     names = [f.object_name for f in files]
-    assert "EPSG_32619/sub1.txt" not in names
-    assert "EPSG_32619/sub2.tiff" in names
+    assert f"""EPSG_32619{os.sep}sub1.txt""" not in names
+    assert f"""EPSG_32619{os.sep}sub2.tiff""" in names
 
     # List sub_path
     files = location.list_files(sub_path="EPSG_32619")
     names = [f.object_name for f in files]
-    assert "EPSG_32619/sub1.txt" in names
-    assert "EPSG_32619/sub2.tiff" in names
+    assert f"""EPSG_32619{os.sep}sub1.txt""" in names
+    assert f"""EPSG_32619{os.sep}sub2.tiff""" in names
     assert len(names) == 2
 
     # List sub_path, directory
     dirs = location.list_sub_paths(pattern='EPSG_')
     assert len(dirs) == 1
     dir = dirs[0]
-    assert dir.get_uri().endswith('/EPSG_32619')
+    assert dir.get_uri().endswith(f"""{os.sep}EPSG_32619""")
     assert dir.name == 'EPSG_32619'
     assert dir.contains('sub1.txt')
     assert dir.contains('sub2.tiff')

@@ -18,8 +18,11 @@ import random
 import shutil
 import sqlite3
 import sys
+import time
 
 import boto3
+import botocore
+import botocore.exceptions
 import numpy as np
 from botocore import UNSIGNED
 from botocore.client import Config
@@ -146,6 +149,7 @@ def get_tessellation(
     prefix: str,
     data_source: str,
     bucket: str = "noaa-ocs-nationalbathymetry-pds",
+    max_retries: int = 5
 ) -> str:
     """
     Download the tessellation scheme geopackage from AWS.
@@ -162,6 +166,8 @@ def get_tessellation(
         the data source for the project e.g. 'BlueTopo' or 'Modeling'.
     bucket : str
         AWS bucket for the National Bathymetric Source project.
+    max_retries : int
+        Maximum number of times to retry S3 queries
 
     Returns
     -------
@@ -202,7 +208,19 @@ def get_tessellation(
         }
         client = boto3.client("s3", **cred)
         pageinator = client.get_paginator("list_objects_v2")
-        objs = pageinator.paginate(Bucket=bucket, Prefix=prefix).build_full_result()
+        retry = True
+        num_retries = 0
+        objs = None
+        while retry:
+            try:
+                num_retries += 1
+                objs = pageinator.paginate(Bucket=bucket, Prefix=prefix).build_full_result()
+                retry = False
+            except botocore.exceptions.EndpointConnectionError as e:
+                if num_retries >= max_retries:
+                    print(f"Exceeded {max_retries} retries, giving up...")
+                    raise e
+                time.sleep(1)
         if "Contents" not in objs:
             print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {datetime.datetime.now().astimezone().tzname()}] {data_source}: No geometry found in {prefix}")
             return None

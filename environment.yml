@@ -4,7 +4,6 @@ channels:
 dependencies:
   - python=3.13
   - gdal
-  - pyfes
   - pip
   - pip:
     - -r requirements.txt
