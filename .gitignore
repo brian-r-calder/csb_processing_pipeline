@@ -207,3 +207,15 @@ marimo/_lsp/
 __marimo__/
 
 .vscode/settings.json
+
+# Local data
+data/
+
+# Large test data downloaded outside of Git
+tests/data/fes2022b/ocean_tide_extrapolated/*.nc
+
+# Test artifacts
+tests/keys
+
+# Test credentials
+.garage-app-key

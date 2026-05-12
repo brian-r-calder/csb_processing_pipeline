@@ -1,13 +1,15 @@
 import sys
 from pathlib import Path
 import traceback
+
 import click
 from rich import print
 import geopandas as gpd
 import duckdb
 
 from ocscsb import __version__ as version
-from ocscsb.library.dcdb import ensure_grid_id_exists, csv_file_exists, process_tile
+from ocscsb.library import io
+from ocscsb.library.dcdb import ensure_grid_id_exists, process_tile
 from ocscsb.library.database import (
     enable_spatial,
     db_unique_ids,
@@ -36,6 +38,8 @@ from ocscsb.library.geotiff import (
     diff_grid_to_geotiff
 )
 
+storage_provider_choice: click.Choice = click.Choice(io.STORAGE_PROVIDER_TYPES)
+
 @click.version_option(version=version)
 @click.group()
 def cli():
@@ -43,10 +47,13 @@ def cli():
 
 @click.command()
 @click.argument('input_shp', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path))
-@click.argument('output_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument('output_location', type=str)
 @click.argument('email', type=str)
 @click.argument('start_date', type=str, default='1970-01-01')
-def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
+@click.option('--provider', type=storage_provider_choice, default=io.STORAGE_PROVIDER_TYPE_DEFAULT,
+              show_default=True, show_choices=True)
+def scrape(input_shp: Path, output_location: str, email: str, start_date: str,
+           provider: str = io.STORAGE_PROVIDER_TYPE_DEFAULT):
     '''Search the DCDB archive API for CSB files from AWS.
 
     This command queries the DCDB point-store API on AWS to find the CSV versions of the contributed CSB
@@ -54,6 +61,8 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
     are stored in OUTPUT_DIR.  The EMAIL specified is used for the API ordering information, and data is
     filtered to be after START_DATE (default: 1970-01-01).
     '''
+    storage: io.StorageLocation = io.StorageLocation(output_location, provider)
+
     gdf: gpd.GeoDataFrame = gpd.read_file(input_shp).to_crs(epsg=4326)
 
     # Ensure GRID_ID exists and is populated
@@ -65,7 +74,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
         tile_name = row['GRID_ID']
         
         # Check if the CSV file for the current tile already exists
-        if csv_file_exists(tile_name, output_dir):
+        if storage.contains(f"{tile_name}.csv", ttl_sec=io.DEFAULT_TTL_SEC):
             print(f"[orange]Warning:[/] CSV file for GRID_ID {tile_name} already exists. Skipping download.")
             continue
         
@@ -74,7 +83,7 @@ def scrape(input_shp: Path, output_dir: Path, email: str, start_date: str):
 
         # Now call process_tile for each tile
         try:
-            process_tile(bbox, email, start_date, tile_name, output_dir)
+            process_tile(bbox, email, start_date, tile_name, storage)
         except Exception as e:
             sys.exit(traceback.format_exc())
 
